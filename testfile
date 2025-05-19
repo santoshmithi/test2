@@ -1,3 +1,7 @@
+You're right - we can make this cleaner by using a single CASE statement per exposure type that returns a JSON object containing all related fields. Here's the improved version:
+
+Optimized Stored Procedure
+sql
 CREATE OR ALTER PROCEDURE dbo.GetBenchmarksWithDynamicExposures
     @First INT = NULL,
     @After NVARCHAR(50) = NULL,
@@ -110,3 +114,86 @@ BEGIN
     ) b
     ORDER BY b.IndexSymbol;
 END
+Updated ExposerService Class
+csharp
+public class ExposerService
+{
+    private readonly DbContext _dbContext;
+    
+    public ExposerService(DbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+
+    public async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithExposures(
+        int? first, 
+        string? after,
+        List<string> requestedExposures)
+    {
+        var requestedExposuresJson = JsonSerializer.Serialize(requestedExposures);
+
+        var connection = _dbContext.Database.GetDbConnection();
+        var command = connection.CreateCommand();
+        command.CommandText = "EXEC dbo.GetBenchmarksWithDynamicExposures @First, @After, @RequestedExposures";
+        
+        command.Parameters.Add(new SqlParameter("@First", first ?? (object)DBNull.Value));
+        command.Parameters.Add(new SqlParameter("@After", after ?? (object)DBNull.Value));
+        command.Parameters.Add(new SqlParameter("@RequestedExposures", requestedExposuresJson));
+
+        await connection.OpenAsync();
+        var reader = await command.ExecuteReaderAsync();
+
+        var benchmarks = new List<BenchmarkQl>();
+        
+        while (await reader.ReadAsync())
+        {
+            var benchmark = new BenchmarkQl
+            {
+                IndexSymbol = reader.GetString(0),
+                ValueDate = reader.GetDateTime(1),
+                IndexCurrency = reader.GetString(2),
+                IndexSource = reader.GetString(3),
+                MessageGuid = reader.GetGuid(4),
+                CountryExposures = new List<CountryExposerQl>(),
+                CurrencyExposures = new List<CurrencyExposerQl>(),
+                CompositionExposures = new List<CompositionExposerQl>()
+            };
+
+            // Process Country Exposure JSON
+            if (requestedExposures.Contains("Country") && !reader.IsDBNull(5))
+            {
+                var countryJson = reader.GetString(5);
+                var countryData = JsonSerializer.Deserialize<CountryExposerQl>(countryJson);
+                countryData.Valuedate = benchmark.ValueDate;
+                countryData.MessageGuid = benchmark.MessageGuid;
+                benchmark.CountryExposures.Add(countryData);
+            }
+
+            // Process Currency Exposure JSON
+            if (requestedExposures.Contains("Currency") && !reader.IsDBNull(6))
+            {
+                var currencyJson = reader.GetString(6);
+                var currencyData = JsonSerializer.Deserialize<CurrencyExposerQl>(currencyJson);
+                currencyData.Valuedate = benchmark.ValueDate;
+                currencyData.MessageGuid = benchmark.MessageGuid;
+                benchmark.CurrencyExposures.Add(currencyData);
+            }
+
+            // Process Composition JSON
+            if (requestedExposures.Contains("Composition") && !reader.IsDBNull(7))
+            {
+                var compositionJson = reader.GetString(7);
+                var compositionData = JsonSerializer.Deserialize<CompositionExposerQl>(compositionJson);
+                compositionData.Valuedate = benchmark.ValueDate;
+                compositionData.MessageGuid = benchmark.MessageGuid;
+                benchmark.CompositionExposures.Add(compositionData);
+            }
+
+            benchmarks.Add(benchmark);
+        }
+
+        await reader.CloseAsync();
+        await connection.CloseAsync();
+        return benchmarks;
+    }
+}
