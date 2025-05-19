@@ -1,57 +1,39 @@
-[GraphQLName("Benchmark")]
-public class BenchmarkQl
+// In your Query.cs file
+public class Query
 {
-    public string IndexSymbol { get; set; }
-    public DateTime ValueDate { get; set; }
-    public string IndexCurrency { get; set; }
-    public string IndexSource { get; set; }
-    public Guid MessageGuid { get; set; }
-
-    // Initialize collections in the constructor
-    public BenchmarkQl()
+    [UsePaging]
+    [UseProjection]
+    [UseFiltering]
+    [UseSorting]
+    public async Task<IEnumerable<BenchmarkQl>> GetLatestBenchmarks(
+        [Service] ExposerService exposerService, // Injected service
+        int? first,
+        string? after,
+        IResolverContext context) // Hot Chocolate context
     {
-        CountryExposures = new List<CountryExposerQl>();
-        CurrencyExposures = new List<CurrencyExposerQl>();
-        CompositionExposures = new List<CompositionExposerQl>();
+        // 1. Detect which exposures are requested
+        var requestedExposures = new List<string>();
+        
+        if (ContainsField(context.Selection.SyntaxNode, "countryExposures"))
+            requestedExposures.Add("Country");
+            
+        if (ContainsField(context.Selection.SyntaxNode, "currencyExposures"))
+            requestedExposures.Add("Currency");
+            
+        if (ContainsField(context.Selection.SyntaxNode, "compositionExposures"))
+            requestedExposures.Add("Composition");
+
+        // 2. Call the service method
+        return await exposerService.GetBenchmarksWithExposures(first, after, requestedExposures);
     }
 
-    // Proper properties with get/set
-    public List<CountryExposerQl> CountryExposures { get; set; }
-    public List<CurrencyExposerQl> CurrencyExposures { get; set; }
-    public List<CompositionExposerQl> CompositionExposures { get; set; }
-}
-
-==============
-public async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithExposures(
-    int? first, 
-    string? after,
-    List<string> requestedExposures)
-{
-    // ... existing code ...
-
-    while (await reader.ReadAsync())
+    private bool ContainsField(ISyntaxNode node, string fieldName)
     {
-        var benchmark = new BenchmarkQl // Collections already initialized in constructor
+        return node switch
         {
-            IndexSymbol = reader.GetString(0),
-            ValueDate = reader.GetDateTime(1),
-            IndexCurrency = reader.GetString(2),
-            IndexSource = reader.GetString(3),
-            MessageGuid = reader.GetGuid(4)
-            // Collections are already initialized
+            FieldNode f when f.Name.Value == fieldName => true,
+            SelectionSetNode s => s.Selections.Any(s => ContainsField(s, fieldName)),
+            _ => false
         };
-
-        // Add exposures as before
-        if (requestedExposures.Contains("Country") && !reader.IsDBNull(5))
-        {
-            benchmark.CountryExposures.Add(new CountryExposerQl
-            {
-                // ... populate fields ...
-            });
-        }
-
-        // ... rest of the code ...
     }
-
-    // ... rest of the code ...
 }
