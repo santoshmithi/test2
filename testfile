@@ -1,88 +1,195 @@
 CREATE OR ALTER PROCEDURE dbo.GetBenchmarksWithDynamicExposures
     @First INT = NULL,
     @After NVARCHAR(50) = NULL,
-    @RequestedExposures NVARCHAR(MAX) -- JSON: ['Country','Currency','Composition']
+    @RequestedExposures NVARCHAR(MAX)
 AS
 BEGIN
-    -- Parse requested exposures
-    DECLARE @FetchCountry BIT = 0, @FetchCurrency BIT = 0, @FetchComposition BIT = 0;
+    SET NOCOUNT ON;
     
-    SELECT 
-        @FetchCountry = CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Country') THEN 1 ELSE 0 END,
-        @FetchCurrency = CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Currency') THEN 1 ELSE 0 END,
-        @FetchComposition = CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Composition') THEN 1 ELSE 0 END;
+    -- Create temp tables for exposures to avoid repeated subqueries
+    CREATE TABLE #LatestBenchmarks (
+        IndexSymbol NVARCHAR(50),
+        ValueDate DATE,
+        IndexCurrency NVARCHAR(10),
+        IndexSource NVARCHAR(50),
+        MessageGuid UNIQUEIDENTIFIER,
+        RowNum INT
+    );
 
     -- Get paginated benchmarks
-    WITH LatestBenchmarks AS (
+    WITH BenchmarksRanked AS (
         SELECT 
-            b.*,
+            b.IndexSymbol,
+            b.ValueDate,
+            b.IndexCurrency,
+            b.IndexSource,
+            b.MessageGuid,
+            ROW_NUMBER() OVER (PARTITION BY b.IndexSymbol ORDER BY b.ValueDate DESC, b.ExecutedDateTime DESC) AS LatestRow,
             ROW_NUMBER() OVER (ORDER BY b.IndexSymbol) AS RowNum
-        FROM (
-            SELECT 
-                b.IndexSymbol,
-                b.ValueDate,
-                b.IndexCurrency,
-                b.IndexSource,
-                b.MessageGuid,
-                ROW_NUMBER() OVER (
-                    PARTITION BY b.IndexSymbol 
-                    ORDER BY b.ValueDate DESC, b.ExecutedDateTime DESC
-                ) AS LatestRow
-            FROM Benchmarks b
-        ) b
-        WHERE b.LatestRow = 1
-        AND (@After IS NULL OR b.IndexSymbol > @After)
+        FROM Benchmarks b
+        WHERE (@After IS NULL OR b.IndexSymbol > @After)
     )
-    
-    -- Return benchmark data with requested exposures
+    INSERT INTO #LatestBenchmarks
+    SELECT 
+        IndexSymbol, ValueDate, IndexCurrency, IndexSource, MessageGuid, RowNum
+    FROM BenchmarksRanked
+    WHERE LatestRow = 1 AND (@First IS NULL OR RowNum <= @First);
+
+    -- Create indexes on temp tables
+    CREATE CLUSTERED INDEX IX_Temp_LatestBenchmarks ON #LatestBenchmarks(IndexSymbol, ValueDate);
+
+    -- Main result query
     SELECT 
         b.IndexSymbol,
         b.ValueDate,
         b.IndexCurrency,
         b.IndexSource,
         b.MessageGuid,
-        -- Country exposure data as JSON array
-        CASE WHEN @FetchCountry = 1 THEN 
-            (SELECT 
-                wa.Country AS country,
-                wa.Weight AS weight,
-                wa.ExtractedDateTime AS extractedDateTime,
-                wa.ImportDate AS importDate
-             FROM WeightAllocation wa
-             WHERE wa.ParentSymbol = b.IndexSymbol 
-             AND wa.ValueDate = b.ValueDate 
-             AND wa.Country IS NOT NULL
-             ORDER BY wa.Weight DESC  -- Optional: order by weight descending
-             FOR JSON PATH)
-        ELSE NULL END AS CountryExposure,
-        -- Currency exposure data as JSON array
-        CASE WHEN @FetchCurrency = 1 THEN 
-            (SELECT 
-                wa.Currency AS currency,
-                wa.Weight AS weight,
-                wa.ExtractedDateTime AS extractedDateTime,
-                wa.ImportDate AS importDate
-             FROM WeightAllocation wa
-             WHERE wa.ParentSymbol = b.IndexSymbol 
-             AND wa.ValueDate = b.ValueDate 
-             AND wa.Currency IS NOT NULL
-             ORDER BY wa.Weight DESC  -- Optional: order by weight descending
-             FOR JSON PATH)
-        ELSE NULL END AS CurrencyExposure,
-        -- Composition data as JSON array
-        CASE WHEN @FetchComposition = 1 THEN 
-            (SELECT 
-                c.Sector AS sector,
-                c.Industry AS industry,
-                c.ExtractedDateTime AS extractedDateTime
-             FROM Composition c
-             WHERE c.ParentSymbol = b.IndexSymbol 
-             AND c.ValueDate = b.ValueDate
-             FOR JSON PATH)
-        ELSE NULL END AS CompositionExposure
-    FROM (
-        SELECT * FROM LatestBenchmarks 
-        WHERE @First IS NULL OR RowNum <= @First
-    ) b
+        -- Country exposure
+        CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Country')
+             THEN (SELECT 
+                     wa.Country AS country,
+                     wa.Weight AS weight,
+                     wa.ExtractedDateTime AS extractedDateTime,
+                     wa.ImportDate AS importDate
+                   FROM WeightAllocation wa
+                   WHERE wa.ParentSymbol = b.IndexSymbol 
+                     AND wa.ValueDate = b.ValueDate 
+                     AND wa.Country IS NOT NULL
+                   ORDER BY wa.Weight DESC
+                   FOR JSON PATH)
+             ELSE NULL END AS CountryExposure,
+        -- Currency exposure
+        CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Currency')
+             THEN (SELECT 
+                     wa.Currency AS currency,
+                     wa.Weight AS weight,
+                     wa.ExtractedDateTime AS extractedDateTime,
+                     wa.ImportDate AS importDate
+                   FROM WeightAllocation wa
+                   WHERE wa.ParentSymbol = b.IndexSymbol 
+                     AND wa.ValueDate = b.ValueDate 
+                     AND wa.Currency IS NOT NULL
+                   ORDER BY wa.Weight DESC
+                   FOR JSON PATH)
+             ELSE NULL END AS CurrencyExposure,
+        -- Composition
+        CASE WHEN EXISTS (SELECT 1 FROM OPENJSON(@RequestedExposures) WHERE value = 'Composition')
+             THEN (SELECT 
+                     c.Sector AS sector,
+                     c.Industry AS industry,
+                     c.ExtractedDateTime AS extractedDateTime
+                   FROM Composition c
+                   WHERE c.ParentSymbol = b.IndexSymbol 
+                     AND c.ValueDate = b.ValueDate
+                   FOR JSON PATH)
+             ELSE NULL END AS CompositionExposure
+    FROM #LatestBenchmarks b
     ORDER BY b.IndexSymbol;
+
+    DROP TABLE #LatestBenchmarks;
 END
+
+====================
+public class ExposerService
+{
+    private readonly DbContext _dbContext;
+    private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true
+    };
+    
+    public ExposerService(DbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+
+    public async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithExposures(
+        int? first, 
+        string? after,
+        List<string> requestedExposures)
+    {
+        // Early exit if no exposures requested
+        if (requestedExposures == null || !requestedExposures.Any())
+        {
+            return await GetBenchmarksWithoutExposures(first, after);
+        }
+
+        var requestedExposuresJson = JsonSerializer.Serialize(requestedExposures);
+
+        await using var connection = _dbContext.Database.GetDbConnection();
+        await connection.OpenAsync();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = "EXEC dbo.GetBenchmarksWithDynamicExposures @First, @After, @RequestedExposures";
+        
+        command.Parameters.Add(new SqlParameter("@First", first ?? (object)DBNull.Value));
+        command.Parameters.Add(new SqlParameter("@After", after ?? (object)DBNull.Value));
+        command.Parameters.Add(new SqlParameter("@RequestedExposures", requestedExposuresJson));
+
+        await using var reader = await command.ExecuteReaderAsync();
+
+        var benchmarks = new List<BenchmarkQl>();
+        var countryIndex = requestedExposures.Contains("Country") ? 5 : -1;
+        var currencyIndex = requestedExposures.Contains("Currency") ? 6 : -1;
+        var compositionIndex = requestedExposures.Contains("Composition") ? 7 : -1;
+
+        while (await reader.ReadAsync())
+        {
+            var benchmark = new BenchmarkQl
+            {
+                IndexSymbol = reader.GetString(0),
+                ValueDate = reader.GetDateTime(1),
+                IndexCurrency = reader.GetString(2),
+                IndexSource = reader.GetString(3),
+                MessageGuid = reader.GetGuid(4),
+                CountryExposures = countryIndex != -1 ? new List<CountryExposerQl>() : null,
+                CurrencyExposures = currencyIndex != -1 ? new List<CurrencyExposerQl>() : null,
+                CompositionExposures = compositionIndex != -1 ? new List<CompositionExposerQl>() : null
+            };
+
+            // Process Country Exposure
+            if (countryIndex != -1 && !reader.IsDBNull(countryIndex))
+            {
+                benchmark.CountryExposures = JsonSerializer.Deserialize<List<CountryExposerQl>>(
+                    reader.GetString(countryIndex), _jsonOptions);
+            }
+
+            // Process Currency Exposure
+            if (currencyIndex != -1 && !reader.IsDBNull(currencyIndex))
+            {
+                benchmark.CurrencyExposures = JsonSerializer.Deserialize<List<CurrencyExposerQl>>(
+                    reader.GetString(currencyIndex), _jsonOptions);
+            }
+
+            // Process Composition
+            if (compositionIndex != -1 && !reader.IsDBNull(compositionIndex))
+            {
+                benchmark.CompositionExposures = JsonSerializer.Deserialize<List<CompositionExposerQl>>(
+                    reader.GetString(compositionIndex), _jsonOptions);
+            }
+
+            benchmarks.Add(benchmark);
+        }
+
+        return benchmarks;
+    }
+
+    private async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithoutExposures(int? first, string? after)
+    {
+        // Simplified query when no exposures are needed
+        return await _dbContext.Benchmarks
+            .Where(b => after == null || b.IndexSymbol > after)
+            .OrderBy(b => b.IndexSymbol)
+            .Take(first ?? int.MaxValue)
+            .Select(b => new BenchmarkQl
+            {
+                IndexSymbol = b.IndexSymbol,
+                ValueDate = b.ValueDate,
+                IndexCurrency = b.IndexCurrency,
+                IndexSource = b.IndexSource,
+                MessageGuid = b.MessageGuid
+            })
+            .ToListAsync();
+    }
+}
