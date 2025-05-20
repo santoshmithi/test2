@@ -20,54 +20,57 @@ public async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithExposures(
 
     await using var reader = await command.ExecuteReaderAsync();
 
+    // Get column ordinals ONCE before the loop
+    var indexSymbolOrdinal = reader.GetOrdinal("IndexSymbol");
+    var valueDateOrdinal = reader.GetOrdinal("ValueDate");
+    var indexCurrencyOrdinal = reader.GetOrdinal("IndexCurrency");
+    var indexSourceOrdinal = reader.GetOrdinal("IndexSource");
+    var messageGuidOrdinal = reader.GetOrdinal("MessageGuid");
+    var countryExposureOrdinal = fetchCountry ? reader.GetOrdinal("CountryExposure") : -1;
+    var currencyExposureOrdinal = fetchCurrency ? reader.GetOrdinal("CurrencyExposure") : -1;
+    var compositionExposureOrdinal = fetchComposition ? reader.GetOrdinal("CompositionExposure") : -1;
+
     var benchmarks = new List<BenchmarkQl>();
     
+    // Pre-allocate JSON buffers if processing many rows
+    var jsonBuffer = fetchCountry || fetchCurrency || fetchComposition 
+        ? new char[8192] 
+        : null;
+
     while (await reader.ReadAsync())
     {
         var benchmark = new BenchmarkQl
         {
-            // Direct column access with GetOrdinal inline
-            IndexSymbol = reader.GetString(reader.GetOrdinal("IndexSymbol")),
-            ValueDate = reader.GetDateTime(reader.GetOrdinal("ValueDate")),
-            IndexCurrency = reader.GetString(reader.GetOrdinal("IndexCurrency")),
-            IndexSource = reader.GetString(reader.GetOrdinal("IndexSource")),
-            MessageGuid = reader.GetGuid(reader.GetOrdinal("MessageGuid")),
+            // Direct access with pre-cached ordinals (fastest approach)
+            IndexSymbol = reader.GetString(indexSymbolOrdinal),
+            ValueDate = reader.GetDateTime(valueDateOrdinal),
+            IndexCurrency = reader.GetString(indexCurrencyOrdinal),
+            IndexSource = reader.GetString(indexSourceOrdinal),
+            MessageGuid = reader.GetGuid(messageGuidOrdinal),
             CountryExposures = fetchCountry ? new List<CountryExposerQl>() : null,
             CurrencyExposures = fetchCurrency ? new List<CurrencyExposerQl>() : null,
             CompositionExposures = fetchComposition ? new List<CompositionExposerQl>() : null
         };
 
         // Process Country Exposure
-        if (fetchCountry)
+        if (fetchCountry && !reader.IsDBNull(countryExposureOrdinal))
         {
-            var ordinal = reader.GetOrdinal("CountryExposure");
-            if (!reader.IsDBNull(ordinal))
-            {
-                benchmark.CountryExposures = JsonSerializer.Deserialize<List<CountryExposerQl>>(
-                    reader.GetString(ordinal), _jsonOptions);
-            }
+            benchmark.CountryExposures = JsonSerializer.Deserialize<List<CountryExposerQl>>(
+                reader.GetString(countryExposureOrdinal), _jsonOptions);
         }
 
         // Process Currency Exposure
-        if (fetchCurrency)
+        if (fetchCurrency && !reader.IsDBNull(currencyExposureOrdinal))
         {
-            var ordinal = reader.GetOrdinal("CurrencyExposure");
-            if (!reader.IsDBNull(ordinal))
-            {
-                benchmark.CurrencyExposures = JsonSerializer.Deserialize<List<CurrencyExposerQl>>(
-                    reader.GetString(ordinal), _jsonOptions);
-            }
+            benchmark.CurrencyExposures = JsonSerializer.Deserialize<List<CurrencyExposerQl>>(
+                reader.GetString(currencyExposureOrdinal), _jsonOptions);
         }
 
         // Process Composition
-        if (fetchComposition)
+        if (fetchComposition && !reader.IsDBNull(compositionExposureOrdinal))
         {
-            var ordinal = reader.GetOrdinal("CompositionExposure");
-            if (!reader.IsDBNull(ordinal))
-            {
-                benchmark.CompositionExposures = JsonSerializer.Deserialize<List<CompositionExposerQl>>(
-                    reader.GetString(ordinal), _jsonOptions);
-            }
+            benchmark.CompositionExposures = JsonSerializer.Deserialize<List<CompositionExposerQl>>(
+                reader.GetString(compositionExposureOrdinal), _jsonOptions);
         }
 
         benchmarks.Add(benchmark);
