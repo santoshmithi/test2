@@ -1,80 +1,46 @@
-public async Task<IEnumerable<BenchmarkQl>> GetBenchmarksWithExposures(
-    int? first, 
-    string? after,
-    bool fetchCountry,
-    bool fetchCurrency,
-    bool fetchComposition)
+public static class UltraFastDataReader
 {
-    await using var connection = _dbContext.Database.GetDbConnection();
-    await connection.OpenAsync();
+    private static readonly ConcurrentDictionary<(Type, string), int> _ordinalCache = new();
     
-    await using var command = connection.CreateCommand();
-    command.CommandText = "dbo.GetBenchmarksWithDynamicExposures";
-    command.CommandType = CommandType.StoredProcedure;
-    
-    command.Parameters.Add(new SqlParameter("@First", first ?? (object)DBNull.Value));
-    command.Parameters.Add(new SqlParameter("@After", after ?? (object)DBNull.Value));
-    command.Parameters.Add(new SqlParameter("@FetchCountry", fetchCountry));
-    command.Parameters.Add(new SqlParameter("@FetchCurrency", fetchCurrency));
-    command.Parameters.Add(new SqlParameter("@FetchComposition", fetchComposition));
-
-    await using var reader = await command.ExecuteReaderAsync();
-
-    // Get column ordinals ONCE before the loop
-    var indexSymbolOrdinal = reader.GetOrdinal("IndexSymbol");
-    var valueDateOrdinal = reader.GetOrdinal("ValueDate");
-    var indexCurrencyOrdinal = reader.GetOrdinal("IndexCurrency");
-    var indexSourceOrdinal = reader.GetOrdinal("IndexSource");
-    var messageGuidOrdinal = reader.GetOrdinal("MessageGuid");
-    var countryExposureOrdinal = fetchCountry ? reader.GetOrdinal("CountryExposure") : -1;
-    var currencyExposureOrdinal = fetchCurrency ? reader.GetOrdinal("CurrencyExposure") : -1;
-    var compositionExposureOrdinal = fetchComposition ? reader.GetOrdinal("CompositionExposure") : -1;
-
-    var benchmarks = new List<BenchmarkQl>();
-    
-    // Pre-allocate JSON buffers if processing many rows
-    var jsonBuffer = fetchCountry || fetchCurrency || fetchComposition 
-        ? new char[8192] 
-        : null;
-
-    while (await reader.ReadAsync())
+    public static int GetOrdinalBlazingFast(this DbDataReader reader, string columnName)
     {
-        var benchmark = new BenchmarkQl
+        var key = (reader.GetType(), columnName);
+        
+        // Check cache first
+        if (_ordinalCache.TryGetValue(key, out var cachedOrdinal))
+            return cachedOrdinal;
+        
+        // Fast-path for small result sets
+        if (reader.FieldCount <= 20)
         {
-            // Direct access with pre-cached ordinals (fastest approach)
-            IndexSymbol = reader.GetString(indexSymbolOrdinal),
-            ValueDate = reader.GetDateTime(valueDateOrdinal),
-            IndexCurrency = reader.GetString(indexCurrencyOrdinal),
-            IndexSource = reader.GetString(indexSourceOrdinal),
-            MessageGuid = reader.GetGuid(messageGuidOrdinal),
-            CountryExposures = fetchCountry ? new List<CountryExposerQl>() : null,
-            CurrencyExposures = fetchCurrency ? new List<CurrencyExposerQl>() : null,
-            CompositionExposures = fetchComposition ? new List<CompositionExposerQl>() : null
-        };
-
-        // Process Country Exposure
-        if (fetchCountry && !reader.IsDBNull(countryExposureOrdinal))
-        {
-            benchmark.CountryExposures = JsonSerializer.Deserialize<List<CountryExposerQl>>(
-                reader.GetString(countryExposureOrdinal), _jsonOptions);
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                if (string.Equals(reader.GetName(i), columnName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _ordinalCache[key] = i;
+                    return i;
+                }
+            }
+            return -1; // Not found
         }
-
-        // Process Currency Exposure
-        if (fetchCurrency && !reader.IsDBNull(currencyExposureOrdinal))
+        
+        // Fallback to native GetOrdinal with caching
+        try
         {
-            benchmark.CurrencyExposures = JsonSerializer.Deserialize<List<CurrencyExposerQl>>(
-                reader.GetString(currencyExposureOrdinal), _jsonOptions);
+            var ordinal = reader.GetOrdinal(columnName);
+            _ordinalCache[key] = ordinal;
+            return ordinal;
         }
-
-        // Process Composition
-        if (fetchComposition && !reader.IsDBNull(compositionExposureOrdinal))
+        catch (IndexOutOfRangeException)
         {
-            benchmark.CompositionExposures = JsonSerializer.Deserialize<List<CompositionExposerQl>>(
-                reader.GetString(compositionExposureOrdinal), _jsonOptions);
+            return -1;
         }
-
-        benchmarks.Add(benchmark);
     }
+}
 
-    return benchmarks;
+// Usage:
+var ordinal = reader.GetOrdinalBlazingFast("CompositionExposure");
+if (ordinal != -1 && !reader.IsDBNull(ordinal))
+{
+    // Process column
 }
