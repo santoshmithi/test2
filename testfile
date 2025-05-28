@@ -1,46 +1,158 @@
-public static class UltraFastDataReader
-{
-    private static readonly ConcurrentDictionary<(Type, string), int> _ordinalCache = new();
-    
-    public static int GetOrdinalBlazingFast(this DbDataReader reader, string columnName)
-    {
-        var key = (reader.GetType(), columnName);
-        
-        // Check cache first
-        if (_ordinalCache.TryGetValue(key, out var cachedOrdinal))
-            return cachedOrdinal;
-        
-        // Fast-path for small result sets
-        if (reader.FieldCount <= 20)
-        {
-            for (int i = 0; i < reader.FieldCount; i++)
-            {
-                if (string.Equals(reader.GetName(i), columnName, StringComparison.OrdinalIgnoreCase))
-                {
-                    _ordinalCache[key] = i;
-                    return i;
-                }
-            }
-            return -1; // Not found
-        }
-        
-        // Fallback to native GetOrdinal with caching
-        try
-        {
-            var ordinal = reader.GetOrdinal(columnName);
-            _ordinalCache[key] = ordinal;
-            return ordinal;
-        }
-        catch (IndexOutOfRangeException)
-        {
-            return -1;
-        }
-    }
-}
+using NUnit.Framework;
+using Moq;
+using System.Data;
+using System.Data.Common;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
-// Usage:
-var ordinal = reader.GetOrdinalBlazingFast("CompositionExposure");
-if (ordinal != -1 && !reader.IsDBNull(ordinal))
+[TestFixture]
+public class ExposerServiceTests
 {
-    // Process column
+    private Mock<ourDBcontext> _mockDbContext;
+    private Mock<DbConnection> _mockConnection;
+    private Mock<DbCommand> _mockCommand;
+    private Mock<DbDataReader> _mockReader;
+    private exposerservice _service;
+
+    [SetUp]
+    public void Setup()
+    {
+        // Setup all the mock objects
+        _mockDbContext = new Mock<ourDBcontext>();
+        _mockConnection = new Mock<DbConnection>();
+        _mockCommand = new Mock<DbCommand>();
+        _mockReader = new Mock<DbDataReader>();
+        
+        // Setup the DB context to return our mock connection
+        _mockDbContext.Setup(x => x.Database.GetDbConnection())
+                     .Returns(_mockConnection.Object);
+        
+        // Setup the connection to return our mock command
+        _mockConnection.Setup(x => x.CreateCommand())
+                      .Returns(_mockCommand.Object);
+        
+        // Setup the command to return our mock reader
+        _mockCommand.Setup(x => x.ExecuteReaderAsync(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(_mockReader.Object);
+        
+        _service = new exposerservice(_mockDbContext.Object);
+    }
+
+    [Test]
+    public async Task Getbenchdetails_ShouldReturnData_WhenReaderHasRows()
+    {
+        // Arrange
+        const int testId = 123;
+        var expectedResults = new List<benchQL>
+        {
+            new benchQL { Id = 1, Name = "Bench 1" },
+            new benchQL { Id = 2, Name = "Bench 2" }
+        };
+
+        // Setup command expectations
+        _mockCommand.SetupProperty(x => x.CommandType);
+        _mockCommand.SetupProperty(x => x.CommandText);
+        
+        // Setup parameter collection
+        var parameters = new Mock<DbParameterCollection>();
+        _mockCommand.Setup(x => x.Parameters).Returns(parameters.Object);
+        
+        // Setup reader behavior
+        var readSequence = _mockReader.SetupSequence(x => x.ReadAsync(It.IsAny<CancellationToken>()))
+                                     .ReturnsAsync(true)
+                                     .ReturnsAsync(true)
+                                     .ReturnsAsync(false);
+        
+        // Setup column ordinals
+        _mockReader.Setup(x => x.GetOrdinal("Id")).Returns(0);
+        _mockReader.Setup(x => x.GetOrdinal("Name")).Returns(1);
+        
+        // Setup reader values
+        _mockReader.SetupSequence(x => x.IsDBNull(It.IsAny<int>()))
+                  .Returns(false)
+                  .Returns(false);
+        
+        _mockReader.SetupSequence(x => x.GetInt32(0))
+                  .Returns(1)
+                  .Returns(2);
+        
+        _mockReader.SetupSequence(x => x.GetString(1))
+                  .Returns("Bench 1")
+                  .Returns("Bench 2");
+
+        // Act
+        var result = await _service.Getbenchdetails(testId);
+
+        // Assert
+        Assert.IsNotNull(result);
+        Assert.AreEqual(2, result.Count());
+        Assert.AreEqual("Bench 1", result.First().Name);
+        
+        // Verify command setup
+        _mockCommand.VerifySet(x => x.CommandType = CommandType.StoredProcedure);
+        _mockCommand.VerifySet(x => x.CommandText = "prcname");
+        parameters.Verify(x => x.Add(It.Is<DbParameter>(p => 
+            p.ParameterName == "@id" && (int)p.Value == testId)));
+        
+        // Verify connection was properly opened and closed
+        _mockConnection.Verify(x => x.OpenAsync(), Times.Once);
+        _mockConnection.Verify(x => x.CloseAsync(), Times.Once);
+    }
+
+    [Test]
+    public async Task Getbenchdetails_ShouldReturnEmptyList_WhenReaderHasNoRows()
+    {
+        // Arrange
+        _mockReader.Setup(x => x.ReadAsync(It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(false);
+
+        // Act
+        var result = await _service.Getbenchdetails(1);
+
+        // Assert
+        Assert.IsNotNull(result);
+        Assert.IsEmpty(result);
+    }
+
+    [Test]
+    public void Getbenchdetails_ShouldHandleDatabaseExceptions()
+    {
+        // Arrange
+        _mockConnection.Setup(x => x.OpenAsync())
+                     .ThrowsAsync(new SqlException("Connection failed"));
+
+        // Act & Assert
+        Assert.ThrowsAsync<SqlException>(async () => 
+            await _service.Getbenchdetails(1));
+        
+        // Verify connection was attempted to be closed even if error occurred
+        _mockConnection.Verify(x => x.CloseAsync(), Times.Once);
+    }
+
+    [Test]
+    public async Task Getbenchdetails_ShouldHandleNullValues()
+    {
+        // Arrange
+        _mockReader.SetupSequence(x => x.ReadAsync(It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(true)
+                  .ReturnsAsync(false);
+        
+        _mockReader.Setup(x => x.GetOrdinal("Id")).Returns(0);
+        _mockReader.Setup(x => x.GetOrdinal("Name")).Returns(1);
+        
+        _mockReader.SetupSequence(x => x.IsDBNull(It.IsAny<int>()))
+                  .Returns(false)  // Id is not null
+                  .Returns(true);  // Name is null
+
+        _mockReader.Setup(x => x.GetInt32(0)).Returns(1);
+
+        // Act
+        var result = await _service.Getbenchdetails(1);
+
+        // Assert
+        Assert.IsNotNull(result);
+        Assert.AreEqual(1, result.Count());
+        Assert.AreEqual(1, result.First().Id);
+        Assert.IsNull(result.First().Name);
+    }
 }
