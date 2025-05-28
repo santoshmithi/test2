@@ -1,3 +1,93 @@
+
+
+using System.Data;
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore; // For DatabaseFacade
+using Moq;
+using NUnit.Framework;
+
+public class ExposerServiceTests
+{
+    private Mock<ourDBcontext> _mockDbContext;
+    private Mock<DbConnection> _mockConnection;
+    private Mock<DbCommand> _mockCommand;
+    private Mock<DbDataReader> _mockReader;
+    private exposerservice _service;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockDbContext = new Mock<ourDBcontext>();
+        _mockConnection = new Mock<DbConnection>();
+        _mockCommand = new Mock<DbCommand>();
+        _mockReader = new Mock<DbDataReader>();
+
+        // 1. Create a real DatabaseFacade with a dummy DbContext
+        var dummyDbContext = new Mock<DbContext>().Object;
+        var realDatabaseFacade = new DatabaseFacade(dummyDbContext);
+
+        // 2. Use CallBase to partially mock the DatabaseFacade
+        var mockDatabaseFacade = new Mock<DatabaseFacade>(dummyDbContext) { CallBase = true };
+        mockDatabaseFacade.Setup(d => d.GetDbConnection()).Returns(_mockConnection.Object);
+
+        // 3. Setup DbContext to return our partially mocked DatabaseFacade
+        _mockDbContext.SetupGet(x => x.Database).Returns(mockDatabaseFacade.Object);
+
+        // 4. Setup command and reader
+        _mockConnection.Setup(x => x.CreateCommand()).Returns(_mockCommand.Object);
+        _mockCommand.Setup(x => x.ExecuteReaderAsync(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(_mockReader.Object);
+
+        _service = new exposerservice(_mockDbContext.Object);
+    }
+
+    [Test]
+    public async Task Getbenchdetails_ShouldExecuteStoredProcedure()
+    {
+        // Arrange
+        const int testId = 123;
+        var expectedData = new List<benchQL>
+        {
+            new benchQL { Id = 1, Name = "Test 1" },
+            new benchQL { Id = 2, Name = "Test 2" }
+        };
+
+        // Setup reader behavior
+        var readSequence = _mockReader.SetupSequence(x => x.ReadAsync(It.IsAny<CancellationToken>()))
+                                    .ReturnsAsync(true)
+                                    .ReturnsAsync(true)
+                                    .ReturnsAsync(false);
+
+        // Setup column values
+        _mockReader.Setup(x => x.GetOrdinal("Id")).Returns(0);
+        _mockReader.Setup(x => x.GetOrdinal("Name")).Returns(1);
+        
+        _mockReader.SetupSequence(x => x.GetInt32(0))
+                  .Returns(1)
+                  .Returns(2);
+        
+        _mockReader.SetupSequence(x => x.GetString(1))
+                  .Returns("Test 1")
+                  .Returns("Test 2");
+
+        // Act
+        var result = await _service.Getbenchdetails(testId);
+
+        // Assert
+        Assert.AreEqual(2, result.Count());
+        Assert.AreEqual("Test 1", result.First().Name);
+        
+        // Verify command setup
+        _mockCommand.VerifySet(x => x.CommandType = CommandType.StoredProcedure);
+        _mockCommand.VerifySet(x => x.CommandText = "prcname");
+        _mockConnection.Verify(x => x.OpenAsync(), Times.Once);
+        _mockConnection.Verify(x => x.CloseAsync(), Times.Once);
+    }
+}
+
+=================
+
+
 csharp
 [TestFixture]
 public class ExposerServiceTests
