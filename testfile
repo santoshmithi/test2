@@ -1,3 +1,4 @@
+csharp
 [TestFixture]
 public class ExposerServiceTests
 {
@@ -37,3 +38,19 @@ public class ExposerServiceTests
 
     // ... rest of your test methods remain the same ...
 }
+Key Changes:
+Added Mock for DatabaseFacade:
+
+csharp
+private Mock<DatabaseFacade> _mockDatabase;
+Proper Setup Chain:
+
+csharp
+_mockDbContext.SetupGet(x => x.Database).Returns(_mockDatabase.Object);
+_mockDatabase.Setup(x => x.GetDbConnection()).Returns(_mockConnection.Object);
+Why This Works:
+The Database property on your DbContext is of type DatabaseFacade
+
+We mock this property and then mock the GetDbConnection() method on our mock DatabaseFacade
+
+This avoids trying to mock an extension method directly
