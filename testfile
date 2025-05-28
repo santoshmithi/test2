@@ -54,3 +54,53 @@ The Database property on your DbContext is of type DatabaseFacade
 We mock this property and then mock the GetDbConnection() method on our mock DatabaseFacade
 
 This avoids trying to mock an extension method directly
+===
+public class TestDatabaseFacade : DatabaseFacade
+{
+    private readonly DbConnection _connection;
+
+    public TestDatabaseFacade(DbConnection connection) 
+        : base(new Mock<DbContext>().Object) // Pass a dummy DbContext
+    {
+        _connection = connection;
+    }
+
+    public override DbConnection GetDbConnection() => _connection;
+}
+
+[TestFixture]
+public class ExposerServiceTests
+{
+    private Mock<ourDBcontext> _mockDbContext;
+    private Mock<DbConnection> _mockConnection;
+    private Mock<DbCommand> _mockCommand;
+    private Mock<DbDataReader> _mockReader;
+    private exposerservice _service;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockDbContext = new Mock<ourDBcontext>();
+        _mockConnection = new Mock<DbConnection>();
+        _mockCommand = new Mock<DbCommand>();
+        _mockReader = new Mock<DbDataReader>();
+        
+        // Create our test double instead of trying to mock DatabaseFacade
+        var testDatabase = new TestDatabaseFacade(_mockConnection.Object);
+        
+        // Setup the Database property to return our test double
+        _mockDbContext.SetupGet(x => x.Database)
+                     .Returns(testDatabase);
+        
+        // Rest of the setup remains the same
+        _mockConnection.Setup(x => x.CreateCommand())
+                      .Returns(_mockCommand.Object);
+        
+        _mockCommand.Setup(x => x.ExecuteReaderAsync(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(_mockReader.Object);
+        
+        _service = new exposerservice(_mockDbContext.Object);
+    }
+
+    // ... rest of your test methods ...
+}
