@@ -1,3 +1,113 @@
+csharp
+public static class TestHelpers
+{
+    public static Mock<benchDBcontex> CreateMockDbContext()
+    {
+        // Create options for DbContext
+        var options = new DbContextOptionsBuilder<benchDBcontex>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+
+        // Create mock with constructor arguments
+        var mock = new Mock<benchDBcontex>(options) { CallBase = true };
+        
+        return mock;
+    }
+}
+2. Update your test setup:
+csharp
+[SetUp]
+public void Setup()
+{
+    // Create mock DbContext using helper
+    _dbContextMock = TestHelpers.CreateMockDbContext();
+    
+    // Setup DbSet
+    _dbSetMock = new Mock<DbSet<SomeClass>>();
+    
+    // Setup provider to return our mock
+    _dbContextProviderMock = new Mock<IDbContexProvider>();
+    _dbContextProviderMock.Setup(p => p.GetBenchDBcontex())
+        .Returns(_dbContextMock.Object);
+    
+    // Rest of your setup...
+}
+3. For testing queries, use the in-memory provider:
+csharp
+[Test]
+public void GetSomeDataForThis_ShouldReturnData()
+{
+    // Arrange
+    var testData = new List<SomeClass>
+    {
+        new SomeClass { Id = 1, Name = "Test 1" },
+        new SomeClass { Id = 2, Name = "Test 2" }
+    }.AsQueryable();
+
+    // Setup DbSet with test data
+    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Provider)
+        .Returns(testData.Provider);
+    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Expression)
+        .Returns(testData.Expression);
+    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.ElementType)
+        .Returns(testData.ElementType);
+    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.GetEnumerator())
+        .Returns(testData.GetEnumerator());
+
+    // Setup DbContext to return our mock DbSet
+    _dbContextMock.Setup(c => c.ModelTableData)
+        .Returns(_dbSetMock.Object);
+
+    // Act
+    var result = _service.GetSomeDataForThis();
+
+    // Assert
+    Assert.AreEqual(2, result.Count());
+}
+Alternative Approach: Use InMemory Database for Testing
+For more realistic testing, consider using EF Core's InMemory provider:
+
+csharp
+[TestFixture]
+public class ExposerServiceIntegrationTests
+{
+    private benchDBcontex _dbContext;
+    private ExposerService _service;
+
+    [SetUp]
+    public void Setup()
+    {
+        var options = new DbContextOptionsBuilder<benchDBcontex>()
+            .UseInMemoryDatabase(databaseName: "TestDatabase")
+            .Options;
+
+        _dbContext = new benchDBcontex(options);
+        
+        // Seed test data
+        _dbContext.ModelTableData.Add(new SomeClass { Id = 1, Name = "Test" });
+        _dbContext.SaveChanges();
+
+        var provider = new DbContexProvider(_dbContext);
+        _service = new ExposerService(provider, /* other dependencies */);
+    }
+
+    [Test]
+    public void GetSomeDataForThis_ShouldReturnData()
+    {
+        var result = _service.GetSomeDataForThis();
+        Assert.AreEqual(1, result.Count());
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _dbContext.Dispose();
+    }
+}
+Ke
+
+=========================
+
 using NUnit.Framework;
 using Moq;
 using System.Data;
