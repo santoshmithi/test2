@@ -1,3 +1,42 @@
+public static class DataReaderExtensions
+{
+    public static T GetNullable<T>(this IDataReaderWrapper reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal))
+        {
+            // Handle both reference and value types
+            return default(T);
+        }
+        
+        // Special handling for nullable value types
+        Type underlyingType = Nullable.GetUnderlyingType(typeof(T));
+        if (underlyingType != null)
+        {
+            // For Nullable<T> types
+            object value = reader.GetFieldValue(ordinal, underlyingType);
+            return (T)value;
+        }
+        
+        // For normal types
+        return reader.GetFieldValue<T>(ordinal);
+    }
+
+    // Helper method to get field value with type conversion
+    private static object GetFieldValue(this IDataReaderWrapper reader, int ordinal, Type type)
+    {
+        // You might need to implement specific type conversion logic here
+        // This is a simplified version
+        if (type == typeof(int)) return reader.GetFieldValue<int>(ordinal);
+        if (type == typeof(decimal)) return reader.GetFieldValue<decimal>(ordinal);
+        if (type == typeof(DateTime)) return reader.GetFieldValue<DateTime>(ordinal);
+        if (type == typeof(string)) return reader.GetFieldValue<string>(ordinal);
+        // Add other types as needed
+        
+        throw new NotSupportedException($"Type {type.Name} is not supported");
+    }
+}
+=============
+
 You're right! Since IDataReaderWrapper is our custom interface, we need to add the IsDBNull method to it. Here's how we should update the interface and implementations:
 
 Update the Interfaces
