@@ -1,3 +1,101 @@
+I'll modify the code to properly handle null values when reading from the data reader. Here's how we can implement the null checks for each field:
+
+csharp
+while (await reader.ReadAsync())
+{
+    var benchQLs = new BenchQL
+    {
+        Id = reader.IsDBNull(idOrdinal) ? 0 : reader.GetFieldValue<int>(idOrdinal),
+        Name = reader.IsDBNull(nameOrdinal) ? null : reader.GetFieldValue<string>(nameOrdinal),
+        // Other properties with null checks
+        Description = reader.IsDBNull(descriptionOrdinal) ? null : reader.GetFieldValue<string>(descriptionOrdinal),
+        Amount = reader.IsDBNull(amountOrdinal) ? (decimal?)null : reader.GetFieldValue<decimal>(amountOrdinal),
+        DateCreated = reader.IsDBNull(dateCreatedOrdinal) ? (DateTime?)null : reader.GetFieldValue<DateTime>(dateCreatedOrdinal)
+    };
+    benchQLvar.Add(benchQLs);
+}
+To make this more maintainable and reduce repetitive code, we can create extension methods for the IDataReaderWrapper:
+
+csharp
+public static class DataReaderExtensions
+{
+    public static T GetNullableFieldValue<T>(this IDataReaderWrapper reader, int ordinal) where T : class
+    {
+        return reader.IsDBNull(ordinal) ? null : reader.GetFieldValue<T>(ordinal);
+    }
+
+    public static T? GetNullableFieldValue<T>(this IDataReaderWrapper reader, int ordinal) where T : struct
+    {
+        return reader.IsDBNull(ordinal) ? (T?)null : reader.GetFieldValue<T>(ordinal);
+    }
+}
+Then the reading code becomes cleaner:
+
+csharp
+while (await reader.ReadAsync())
+{
+    var benchQLs = new BenchQL
+    {
+        Id = reader.GetFieldValue<int>(idOrdinal), // Assuming Id is not nullable
+        Name = reader.GetNullableFieldValue<string>(nameOrdinal),
+        Description = reader.GetNullableFieldValue<string>(descriptionOrdinal),
+        Amount = reader.GetNullableFieldValue<decimal>(amountOrdinal),
+        DateCreated = reader.GetNullableFieldValue<DateTime>(dateCreatedOrdinal)
+    };
+    benchQLvar.Add(benchQLs);
+}
+For the unit tests, we should add test cases for null values:
+
+csharp
+[Test]
+public async Task GetBenchDetails_ShouldHandleNullValues()
+{
+    // Arrange
+    var testId = 1;
+    var readSequence = _readerMock.SetupSequence(r => r.ReadAsync());
+    readSequence.ReturnsAsync(true); // Row with null values
+    readSequence.ReturnsAsync(false); // End of data
+
+    _readerMock.Setup(r => r.GetOrdinal("Id")).Returns(0);
+    _readerMock.Setup(r => r.GetOrdinal("Name")).Returns(1);
+    _readerMock.Setup(r => r.GetOrdinal("Description")).Returns(2);
+    _readerMock.Setup(r => r.GetOrdinal("Amount")).Returns(3);
+    _readerMock.Setup(r => r.GetOrdinal("DateCreated")).Returns(4);
+
+    // Setup null values
+    _readerMock.Setup(r => r.IsDBNull(0)).Returns(false);
+    _readerMock.Setup(r => r.IsDBNull(1)).Returns(true); // Name is null
+    _readerMock.Setup(r => r.IsDBNull(2)).Returns(true); // Description is null
+    _readerMock.Setup(r => r.IsDBNull(3)).Returns(false);
+    _readerMock.Setup(r => r.IsDBNull(4)).Returns(true); // DateCreated is null
+
+    _readerMock.Setup(r => r.GetFieldValue<int>(0)).Returns(1);
+    _readerMock.Setup(r => r.GetFieldValue<decimal>(3)).Returns(100.50m);
+
+    // Act
+    var result = await _service.GetBenchDetails(testId);
+    var firstItem = result.First();
+
+    // Assert
+    Assert.AreEqual(1, firstItem.Id);
+    Assert.IsNull(firstItem.Name);
+    Assert.IsNull(firstItem.Description);
+    Assert.AreEqual(100.50m, firstItem.Amount);
+    Assert.IsNull(firstItem.DateCreated);
+}
+This approach provides:
+
+Proper null handling for all database fields
+
+Cleaner code through extension methods
+
+Comprehensive test coverage for null values
+
+Type safety with generic methods
+
+=============
+
+
 I'll create proper wrappers for the database operations and then write unit tests using NUnit. This will help mock the database interactions effectively.
 
 First, let's create the necessary wrappers:
