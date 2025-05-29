@@ -1,3 +1,91 @@
+You're right! Since IDataReaderWrapper is our custom interface, we need to add the IsDBNull method to it. Here's how we should update the interface and implementations:
+
+Update the Interfaces
+csharp
+public interface IDataReaderWrapper : IDisposable
+{
+    Task<bool> ReadAsync();
+    object this[string name] { get; }
+    int GetOrdinal(string name);
+    T GetFieldValue<T>(int ordinal);
+    bool IsDBNull(int ordinal); // Add this method
+}
+Update the Implementation
+csharp
+public class DataReaderWrapper : IDataReaderWrapper
+{
+    private readonly DbDataReader _reader;
+
+    public DataReaderWrapper(DbDataReader reader)
+    {
+        _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+    }
+
+    public async Task<bool> ReadAsync() => await _reader.ReadAsync();
+    public object this[string name] => _reader[name];
+    public int GetOrdinal(string name) => _reader.GetOrdinal(name);
+    public T GetFieldValue<T>(int ordinal) => _reader.GetFieldValue<T>(ordinal);
+    public bool IsDBNull(int ordinal) => _reader.IsDBNull(ordinal); // Implement the method
+    public void Dispose() => _reader.Dispose();
+}
+Update the Extension Methods
+Now we can update our extension methods to use the interface's IsDBNull method:
+
+csharp
+public static class DataReaderExtensions
+{
+    public static T GetNullableFieldValue<T>(this IDataReaderWrapper reader, int ordinal) where T : class
+    {
+        return reader.IsDBNull(ordinal) ? null : reader.GetFieldValue<T>(ordinal);
+    }
+
+    public static T? GetNullableFieldValue<T>(this IDataReaderWrapper reader, int ordinal) where T : struct
+    {
+        return reader.IsDBNull(ordinal) ? (T?)null : reader.GetFieldValue<T>(ordinal);
+    }
+}
+Update the Usage in Service
+Now you can use either the direct approach or the extension methods:
+
+csharp
+// Direct approach
+while (await reader.ReadAsync())
+{
+    var benchQLs = new BenchQL
+    {
+        Id = reader.IsDBNull(idOrdinal) ? 0 : reader.GetFieldValue<int>(idOrdinal),
+        Name = reader.IsDBNull(nameOrdinal) ? null : reader.GetFieldValue<string>(nameOrdinal)
+    };
+    benchQLvar.Add(benchQLs);
+}
+
+// Or using extension methods
+while (await reader.ReadAsync())
+{
+    var benchQLs = new BenchQL
+    {
+        Id = reader.GetFieldValue<int>(idOrdinal), // Not nullable
+        Name = reader.GetNullableFieldValue<string>(nameOrdinal),
+        Amount = reader.GetNullableFieldValue<decimal>(amountOrdinal)
+    };
+    benchQLvar.Add(benchQLs);
+}
+Update the Unit Tests
+Make sure your mock setup includes the new method:
+
+csharp
+// In your test setup
+_readerMock.Setup(r => r.IsDBNull(It.IsAny<int>()))
+    .Returns<int>(ordinal => 
+    {
+        // Your logic to determine which columns should be null
+        if (ordinal == nameOrdinal) return true; // Name is null
+        if (ordinal == descriptionOrdinal) return true; // Description is null
+        return false; // Other columns are not null
+    });
+
+------------------------------------------
+
 I'll modify the code to properly handle null values when reading from the data reader. Here's how we can implement the null checks for each field:
 
 csharp
