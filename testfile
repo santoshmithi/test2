@@ -1,183 +1,300 @@
-You're encountering this error because GetDbConnection() is an extension method from Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions, and Moq cannot mock extension methods directly. Let me provide a complete working solution that properly handles this limitation.
+I'll create proper wrappers for the database operations and then write unit tests using NUnit. This will help mock the database interactions effectively.
 
-Final Working Solution (Using Wrapper Pattern)
-The most reliable approach is to create a simple wrapper interface that you can mock:
+First, let's create the necessary wrappers:
+csharp
+public interface IDatabaseConnection
+{
+    Task OpenAsync();
+    Task CloseAsync();
+    IDbCommand CreateCommand();
+}
 
-1. Create a Connection Provider Interface
-csharp
-public interface IDbConnectionProvider
+public interface IDbCommandWrapper
 {
-    DbConnection GetDbConnection();
+    CommandType CommandType { get; set; }
+    string CommandText { get; set; }
+    Task<IDataReaderWrapper> ExecuteReaderAsync();
+    void AddParameter(string name, object value);
 }
-2. Implement the Wrapper for Production
-csharp
-public class EFCoreDbConnectionProvider : IDbConnectionProvider
+
+public interface IDataReaderWrapper : IDisposable
 {
-    private readonly DbContext _context;
-    
-    public EFCoreDbConnectionProvider(DbContext context)
-    {
-        _context = context;
-    }
-    
-    public DbConnection GetDbConnection() => _context.Database.GetDbConnection();
+    Task<bool> ReadAsync();
+    object this[string name] { get; }
+    int GetOrdinal(string name);
+    T GetFieldValue<T>(int ordinal);
 }
-3. Modify Your Service to Use the Interface
-csharp
-public class exposerservice
+
+// Implementations
+public class DatabaseConnectionWrapper : IDatabaseConnection
 {
-    private readonly IDbConnectionProvider _connectionProvider;
-    
-    public exposerservice(IDbConnectionProvider connectionProvider)
+    private readonly DbConnection _connection;
+
+    public DatabaseConnectionWrapper(DbConnection connection)
     {
-        _connectionProvider = connectionProvider;
+        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
     }
-    
-    public async Task<IEnumerable<benchQL>> Getbenchdetails(int id)
+
+    public async Task OpenAsync() => await _connection.OpenAsync();
+    public async Task CloseAsync() => await _connection.CloseAsync();
+    public IDbCommand CreateCommand() => _connection.CreateCommand();
+}
+
+public class DbCommandWrapper : IDbCommandWrapper
+{
+    private readonly IDbCommand _command;
+
+    public DbCommandWrapper(IDbCommand command)
     {
-        var benchQLvar = new List<benchQL>();
-        var connection = _connectionProvider.GetDbConnection();
-        
+        _command = command ?? throw new ArgumentNullException(nameof(command));
+    }
+
+    public CommandType CommandType 
+    {
+        get => _command.CommandType;
+        set => _command.CommandType = value;
+    }
+
+    public string CommandText 
+    {
+        get => _command.CommandText;
+        set => _command.CommandText = value;
+    }
+
+    public async Task<IDataReaderWrapper> ExecuteReaderAsync()
+    {
+        var dbCommand = _command as DbCommand;
+        if (dbCommand == null)
+            throw new InvalidOperationException("Command must be a DbCommand for async operations");
+            
+        var reader = await dbCommand.ExecuteReaderAsync();
+        return new DataReaderWrapper(reader);
+    }
+
+    public void AddParameter(string name, object value)
+    {
+        var parameter = _command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        _command.Parameters.Add(parameter);
+    }
+}
+
+public class DataReaderWrapper : IDataReaderWrapper
+{
+    private readonly DbDataReader _reader;
+
+    public DataReaderWrapper(DbDataReader reader)
+    {
+        _reader = reader ?? throw new ArgumentNullException(nameof(reader));
+    }
+
+    public async Task<bool> ReadAsync() => await _reader.ReadAsync();
+    public object this[string name] => _reader[name];
+    public int GetOrdinal(string name) => _reader.GetOrdinal(name);
+    public T GetFieldValue<T>(int ordinal) => _reader.GetFieldValue<T>(ordinal);
+    public void Dispose() => _reader.Dispose();
+}
+Now, let's modify the exposer service to use these wrappers:
+csharp
+public class ExposerService
+{
+    private readonly IDbContexProvider _dbContexProvider;
+    private readonly IDatabaseConnectionFactory _connectionFactory;
+
+    public ExposerService(IDbContexProvider dbContexProvider, IDatabaseConnectionFactory connectionFactory)
+    {
+        _dbContexProvider = dbContexProvider;
+        _connectionFactory = connectionFactory;
+    }
+
+    public async Task<IEnumerable<BenchQL>> GetBenchDetails(int id)
+    {
+        var benchQLvar = new List<BenchQL>();
+        var connection = _connectionFactory.CreateConnection(_dbContexProvider.GetDbConnection());
+
         try
         {
             await connection.OpenAsync();
-            using var command = connection.CreateCommand();
-            command.CommandType = CommandType.StoredProcedure;
-            command.CommandText = "prcname";
-            // add parameters
+            var command = connection.CreateCommand();
+            var commandWrapper = new DbCommandWrapper(command);
             
-            using var reader = await command.ExecuteReaderAsync();
-            // get column ordinals
-            
-            while (await reader.ReadAsync())
+            commandWrapper.CommandType = CommandType.StoredProcedure;
+            commandWrapper.CommandText = "prcname";
+            commandWrapper.AddParameter("id", id);
+
+            using (var reader = await commandWrapper.ExecuteReaderAsync())
             {
-                var benchQLs = new benchQL
+                // Get column ordinals first
+                var idOrdinal = reader.GetOrdinal("Id");
+                var nameOrdinal = reader.GetOrdinal("Name");
+                // Add other columns as needed
+
+                while (await reader.ReadAsync())
                 {
-                    // fill object properties
-                };
-                benchQLvar.Add(benchQLs);
+                    var benchQLs = new BenchQL
+                    {
+                        Id = reader.GetFieldValue<int>(idOrdinal),
+                        Name = reader.GetFieldValue<string>(nameOrdinal),
+                        // fill other properties
+                    };
+                    benchQLvar.Add(benchQLs);
+                }
             }
         }
         finally
         {
             await connection.CloseAsync();
         }
-        
+
         return benchQLvar;
     }
+
+    public IQueryable<SomeClass> GetSomeDataForThis()
+    {
+        return _dbContexProvider.GetBenchDBcontex().ModelTableData;
+    }
 }
-4. Now You Can Write Clean Tests
+
+// Additional interface needed
+public interface IDatabaseConnectionFactory
+{
+    IDatabaseConnection CreateConnection(DbConnection connection);
+}
+
+public class DatabaseConnectionFactory : IDatabaseConnectionFactory
+{
+    public IDatabaseConnection CreateConnection(DbConnection connection)
+    {
+        return new DatabaseConnectionWrapper(connection);
+    }
+}
+Now, let's create the unit tests using NUnit:
 csharp
+using NUnit.Framework;
+using Moq;
+using System.Data;
+using System.Data.Common;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+
 [TestFixture]
 public class ExposerServiceTests
 {
-    private Mock<IDbConnectionProvider> _mockConnectionProvider;
-    private Mock<DbConnection> _mockConnection;
-    private Mock<DbCommand> _mockCommand;
-    private Mock<DbDataReader> _mockReader;
-    private exposerservice _service;
+    private Mock<IDbContexProvider> _dbContextProviderMock;
+    private Mock<IDatabaseConnectionFactory> _connectionFactoryMock;
+    private Mock<IDatabaseConnection> _connectionMock;
+    private Mock<IDbCommandWrapper> _commandMock;
+    private Mock<IDataReaderWrapper> _readerMock;
+    private ExposerService _service;
 
     [SetUp]
     public void Setup()
     {
-        _mockConnectionProvider = new Mock<IDbConnectionProvider>();
-        _mockConnection = new Mock<DbConnection>();
-        _mockCommand = new Mock<DbCommand>();
-        _mockReader = new Mock<DbDataReader>();
-        
-        // Setup the connection provider to return our mock connection
-        _mockConnectionProvider.Setup(x => x.GetDbConnection())
-                             .Returns(_mockConnection.Object);
-        
-        // Setup the connection to return our mock command
-        _mockConnection.Setup(x => x.CreateCommand())
-                      .Returns(_mockCommand.Object);
-        
-        // Setup the command to return our mock reader
-        _mockCommand.Setup(x => x.ExecuteReaderAsync(It.IsAny<CancellationToken>()))
-                   .ReturnsAsync(_mockReader.Object);
-        
-        _service = new exposerservice(_mockConnectionProvider.Object);
+        _dbContextProviderMock = new Mock<IDbContexProvider>();
+        _connectionFactoryMock = new Mock<IDatabaseConnectionFactory>();
+        _connectionMock = new Mock<IDatabaseConnection>();
+        _commandMock = new Mock<IDbCommandWrapper>();
+        _readerMock = new Mock<IDataReaderWrapper>();
+
+        _connectionFactoryMock.Setup(f => f.CreateConnection(It.IsAny<DbConnection>()))
+            .Returns(_connectionMock.Object);
+
+        _connectionMock.Setup(c => c.CreateCommand())
+            .Returns(_commandMock.Object);
+
+        _commandMock.Setup(c => c.ExecuteReaderAsync())
+            .ReturnsAsync(_readerMock.Object);
+
+        _service = new ExposerService(
+            _dbContextProviderMock.Object,
+            _connectionFactoryMock.Object);
     }
 
     [Test]
-    public async Task Getbenchdetails_ShouldExecuteStoredProcedure()
+    public async Task GetBenchDetails_ShouldReturnData_WhenProcedureExecutesSuccessfully()
     {
         // Arrange
-        const int testId = 123;
+        var testId = 1;
+        var expectedResults = new List<BenchQL>
+        {
+            new BenchQL { Id = 1, Name = "Test 1" },
+            new BenchQL { Id = 2, Name = "Test 2" }
+        };
+
+        var readSequence = _readerMock.SetupSequence(r => r.ReadAsync());
+        readSequence.ReturnsAsync(true); // First row
+        readSequence.ReturnsAsync(true); // Second row
+        readSequence.ReturnsAsync(false); // End of data
+
+        _readerMock.Setup(r => r.GetOrdinal("Id")).Returns(0);
+        _readerMock.Setup(r => r.GetOrdinal("Name")).Returns(1);
         
-        // Setup reader to return two rows
-        var readSequence = _mockReader.SetupSequence(x => x.ReadAsync(It.IsAny<CancellationToken>()))
-                                    .ReturnsAsync(true)
-                                    .ReturnsAsync(true)
-                                    .ReturnsAsync(false);
-        
-        // Setup column values
-        _mockReader.Setup(x => x.GetOrdinal("Id")).Returns(0);
-        _mockReader.Setup(x => x.GetOrdinal("Name")).Returns(1);
-        
-        _mockReader.SetupSequence(x => x.GetInt32(0))
-                  .Returns(1)
-                  .Returns(2);
-        
-        _mockReader.SetupSequence(x => x.GetString(1))
-                  .Returns("Bench 1")
-                  .Returns("Bench 2");
+        _readerMock.Setup(r => r.GetFieldValue<int>(0))
+            .Returns<int>(i => expectedResults[i].Id);
+        _readerMock.Setup(r => r.GetFieldValue<string>(1))
+            .Returns<int>(i => expectedResults[i].Name);
 
         // Act
-        var result = await _service.Getbenchdetails(testId);
+        var result = await _service.GetBenchDetails(testId);
 
         // Assert
+        Assert.IsNotNull(result);
         Assert.AreEqual(2, result.Count());
-        Assert.AreEqual("Bench 1", result.First().Name);
-        
+        Assert.AreEqual("Test 1", result.First().Name);
+
         // Verify command was set up correctly
-        _mockCommand.VerifySet(x => x.CommandType = CommandType.StoredProcedure);
-        _mockCommand.VerifySet(x => x.CommandText = "prcname");
-        
-        // Verify connection was properly managed
-        _mockConnection.Verify(x => x.OpenAsync(), Times.Once);
-        _mockConnection.Verify(x => x.CloseAsync(), Times.Once);
+        _commandMock.VerifySet(c => c.CommandType = CommandType.StoredProcedure);
+        _commandMock.VerifySet(c => c.CommandText = "prcname");
+        _commandMock.Verify(c => c.AddParameter("id", testId), Times.Once);
+
+        // Verify connection was opened and closed
+        _connectionMock.Verify(c => c.OpenAsync(), Times.Once);
+        _connectionMock.Verify(c => c.CloseAsync(), Times.Once);
     }
-}
-Key Benefits of This Approach:
-No Extension Method Mocking: Completely avoids the need to mock extension methods
 
-Clean Separation of Concerns: Database access logic is properly abstracted
-
-Easy to Test: All dependencies can be easily mocked
-
-Maintainable: Changes to EF Core won't break your tests
-
-Flexible: Can be used with any database access technology
-
-Alternative: Low-Level ADO.NET Testing
-If you absolutely cannot modify the production code, you can use this more complex approach:
-
-csharp
-[TestFixture]
-public class ExposerServiceTests
-{
     [Test]
-    public async Task Getbenchdetails_ShouldWork()
+    public void GetBenchDetails_ShouldThrow_WhenConnectionFails()
     {
-        // Create a real SQLite in-memory connection
-        var connection = new SqliteConnection("DataSource=:memory:");
-        await connection.OpenAsync();
+        // Arrange
+        var testId = 1;
+        _connectionMock.Setup(c => c.OpenAsync())
+            .ThrowsAsync(new Exception("Connection failed"));
+
+        // Act & Assert
+        Assert.ThrowsAsync<Exception>(() => _service.GetBenchDetails(testId));
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldReturnEmpty_WhenNoData()
+    {
+        // Arrange
+        var testId = 1;
+        _readerMock.Setup(r => r.ReadAsync()).ReturnsAsync(false);
+
+        // Act
+        var result = await _service.GetBenchDetails(testId);
+
+        // Assert
+        Assert.IsNotNull(result);
+        Assert.IsEmpty(result);
+    }
+
+    [Test]
+    public void GetSomeDataForThis_ShouldReturnQueryable()
+    {
+        // Arrange
+        var mockDbSet = new Mock<DbSet<SomeClass>>();
+        var mockContext = new Mock<benchDBcontex>();
         
-        // Replace the DbContext with one that uses our connection
-        var options = new DbContextOptionsBuilder<ourDBcontext>()
-            .UseSqlite(connection)
-            .Options;
-        
-        var mockDbContext = new Mock<ourDBcontext>(options);
-        mockDbContext.SetupGet(x => x.Database)
-                    .Returns(new DatabaseFacade(mockDbContext.Object));
-        
-        var service = new exposerservice(mockDbContext.Object);
-        
-        // Act and Assert
-        // ...
+        mockContext.Setup(c => c.ModelTableData).Returns(mockDbSet.Object);
+        _dbContextProviderMock.Setup(p => p.GetBenchDBcontex()).Returns(mockContext.Object);
+
+        // Act
+        var result = _service.GetSomeDataForThis();
+
+        // Assert
+        Assert.IsNotNull(result);
+        _dbContextProviderMock.Verify(p => p.GetBenchDBcontex(), Times.Once);
     }
 }
-However, the wrapper pattern is strongly recommended as it leads to much cleaner and more maintainable code. Would you like me to elaborate on any part of this solution?
