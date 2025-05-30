@@ -1,328 +1,224 @@
-csharp
-public static class TestHelpers
-{
-    public static Mock<benchDBcontex> CreateMockDbContext()
-    {
-        // Create options for DbContext
-        var options = new DbContextOptionsBuilder<benchDBcontex>()
-            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-            .Options;
-
-        // Create mock with constructor arguments
-        var mock = new Mock<benchDBcontex>(options) { CallBase = true };
-        
-        return mock;
-    }
-}
-2. Update your test setup:
-csharp
-[SetUp]
-public void Setup()
-{
-    // Create mock DbContext using helper
-    _dbContextMock = TestHelpers.CreateMockDbContext();
-    
-    // Setup DbSet
-    _dbSetMock = new Mock<DbSet<SomeClass>>();
-    
-    // Setup provider to return our mock
-    _dbContextProviderMock = new Mock<IDbContexProvider>();
-    _dbContextProviderMock.Setup(p => p.GetBenchDBcontex())
-        .Returns(_dbContextMock.Object);
-    
-    // Rest of your setup...
-}
-3. For testing queries, use the in-memory provider:
-csharp
-[Test]
-public void GetSomeDataForThis_ShouldReturnData()
-{
-    // Arrange
-    var testData = new List<SomeClass>
-    {
-        new SomeClass { Id = 1, Name = "Test 1" },
-        new SomeClass { Id = 2, Name = "Test 2" }
-    }.AsQueryable();
-
-    // Setup DbSet with test data
-    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Provider)
-        .Returns(testData.Provider);
-    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Expression)
-        .Returns(testData.Expression);
-    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.ElementType)
-        .Returns(testData.ElementType);
-    _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.GetEnumerator())
-        .Returns(testData.GetEnumerator());
-
-    // Setup DbContext to return our mock DbSet
-    _dbContextMock.Setup(c => c.ModelTableData)
-        .Returns(_dbSetMock.Object);
-
-    // Act
-    var result = _service.GetSomeDataForThis();
-
-    // Assert
-    Assert.AreEqual(2, result.Count());
-}
-Alternative Approach: Use InMemory Database for Testing
-For more realistic testing, consider using EF Core's InMemory provider:
-
-csharp
-[TestFixture]
-public class ExposerServiceIntegrationTests
-{
-    private benchDBcontex _dbContext;
-    private ExposerService _service;
-
-    [SetUp]
-    public void Setup()
-    {
-        var options = new DbContextOptionsBuilder<benchDBcontex>()
-            .UseInMemoryDatabase(databaseName: "TestDatabase")
-            .Options;
-
-        _dbContext = new benchDBcontex(options);
-        
-        // Seed test data
-        _dbContext.ModelTableData.Add(new SomeClass { Id = 1, Name = "Test" });
-        _dbContext.SaveChanges();
-
-        var provider = new DbContexProvider(_dbContext);
-        _service = new ExposerService(provider, /* other dependencies */);
-    }
-
-    [Test]
-    public void GetSomeDataForThis_ShouldReturnData()
-    {
-        var result = _service.GetSomeDataForThis();
-        Assert.AreEqual(1, result.Count());
-    }
-
-    [TearDown]
-    public void TearDown()
-    {
-        _dbContext.Dispose();
-    }
-}
-Ke
-
-=========================
-
 using NUnit.Framework;
 using Moq;
 using System.Data;
 using System.Data.Common;
-using System.Threading.Tasks;
-using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
+using System.Threading.Tasks;
 
 [TestFixture]
-public class ExposerServiceTests
+public class WrapperTests
 {
-    private Mock<IDbContexProvider> _dbContextProviderMock;
-    private Mock<IDatabaseConnectionFactory> _connectionFactoryMock;
-    private Mock<IDatabaseConnection> _connectionMock;
-    private Mock<IDbCommandWrapper> _commandMock;
-    private Mock<IDataReaderWrapper> _readerMock;
-    private ExposerService _service;
-    private Mock<benchDBcontex> _dbContextMock;
-    private Mock<DbSet<SomeClass>> _dbSetMock;
-
-    [SetUp]
-    public void Setup()
-    {
-        // Initialize all mocks
-        _dbContextProviderMock = new Mock<IDbContexProvider>();
-        _connectionFactoryMock = new Mock<IDatabaseConnectionFactory>();
-        _connectionMock = new Mock<IDatabaseConnection>();
-        _commandMock = new Mock<IDbCommandWrapper>();
-        _readerMock = new Mock<IDataReaderWrapper>();
-        _dbContextMock = new Mock<benchDBcontex>();
-        _dbSetMock = new Mock<DbSet<SomeClass>>();
-
-        // Setup default behaviors
-        _connectionFactoryMock.Setup(f => f.CreateConnection(It.IsAny<DbConnection>()))
-            .Returns(_connectionMock.Object);
-
-        _connectionMock.Setup(c => c.CreateCommand())
-            .Returns(_commandMock.Object);
-
-        _commandMock.Setup(c => c.ExecuteReaderAsync())
-            .ReturnsAsync(_readerMock.Object);
-
-        _dbContextProviderMock.Setup(p => p.GetDbConnection())
-            .Returns(new Mock<DbConnection>().Object);
-
-        _dbContextProviderMock.Setup(p => p.GetBenchDBcontex())
-            .Returns(_dbContextMock.Object);
-
-        _dbContextMock.Setup(c => c.ModelTableData)
-            .Returns(_dbSetMock.Object);
-
-        // Create service instance with mocked dependencies
-        _service = new ExposerService(
-            _dbContextProviderMock.Object,
-            _connectionFactoryMock.Object);
-    }
+    #region DbContexProvider Tests
 
     [Test]
-    public async Task GetBenchDetails_ShouldReturnData_WhenProcedureExecutesSuccessfully()
+    public void DbContexProvider_ShouldReturnDbContext()
     {
         // Arrange
-        const int testId = 1;
-        var expectedResults = new List<BenchQL>
-        {
-            new BenchQL { Id = 1, Name = "Test 1", Amount = 100.50m },
-            new BenchQL { Id = 2, Name = "Test 2", Amount = 200.75m }
-        };
-
-        SetupReaderForSuccessScenario(expectedResults);
+        var mockDbContext = new Mock<benchDBcontex>();
+        var provider = new DbContexProvider(mockDbContext.Object);
 
         // Act
-        var result = await _service.GetBenchDetails(testId);
+        var result = provider.GetBenchDBcontex();
 
         // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Count(), Is.EqualTo(2));
-        Assert.That(result.First().Name, Is.EqualTo("Test 1"));
-        Assert.That(result.Last().Amount, Is.EqualTo(200.75m));
-
-        VerifyCommandSetup(testId);
-        VerifyConnectionManagement();
+        Assert.That(result, Is.EqualTo(mockDbContext.Object));
     }
 
     [Test]
-    public async Task GetBenchDetails_ShouldHandleNullValues()
+    public void DbContexProvider_ShouldReturnDbConnection()
     {
         // Arrange
-        const int testId = 1;
-        SetupReaderForNullScenario();
+        var mockConnection = new Mock<DbConnection>();
+        var mockDbContext = new Mock<benchDBcontex>();
+        mockDbContext.Setup(d => d.Database.GetDbConnection()).Returns(mockConnection.Object);
+        
+        var provider = new DbContexProvider(mockDbContext.Object);
 
         // Act
-        var result = await _service.GetBenchDetails(testId);
-        var firstItem = result.First();
+        var result = provider.GetDbConnection();
 
         // Assert
-        Assert.That(firstItem.Name, Is.Null);
-        Assert.That(firstItem.Description, Is.Null);
-        Assert.That(firstItem.Amount, Is.EqualTo(100.50m));
-        Assert.That(firstItem.DateCreated, Is.Null);
-    }
-
-    [Test]
-    public void GetBenchDetails_ShouldThrow_WhenConnectionFails()
-    {
-        // Arrange
-        const int testId = 1;
-        _connectionMock.Setup(c => c.OpenAsync())
-            .ThrowsAsync(new Exception("Connection failed"));
-
-        // Act & Assert
-        Assert.ThrowsAsync<Exception>(() => _service.GetBenchDetails(testId));
-    }
-
-    [Test]
-    public async Task GetBenchDetails_ShouldReturnEmpty_WhenNoData()
-    {
-        // Arrange
-        const int testId = 1;
-        _readerMock.Setup(r => r.ReadAsync()).ReturnsAsync(false);
-
-        // Act
-        var result = await _service.GetBenchDetails(testId);
-
-        // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result, Is.Empty);
-    }
-
-    [Test]
-    public void GetSomeDataForThis_ShouldReturnQueryable()
-    {
-        // Arrange
-        var testData = new List<SomeClass>
-        {
-            new SomeClass { Id = 1, Name = "Test" }
-        }.AsQueryable();
-
-        _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Provider)
-            .Returns(testData.Provider);
-        _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.Expression)
-            .Returns(testData.Expression);
-        _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.ElementType)
-            .Returns(testData.ElementType);
-        _dbSetMock.As<IQueryable<SomeClass>>().Setup(m => m.GetEnumerator())
-            .Returns(testData.GetEnumerator());
-
-        // Act
-        var result = _service.GetSomeDataForThis();
-
-        // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Count(), Is.EqualTo(1));
-        _dbContextProviderMock.Verify(p => p.GetBenchDBcontex(), Times.Once);
-    }
-
-    #region Helper Methods
-
-    private void SetupReaderForSuccessScenario(List<BenchQL> expectedResults)
-    {
-        var readSequence = _readerMock.SetupSequence(r => r.ReadAsync());
-        readSequence.ReturnsAsync(true); // First row
-        readSequence.ReturnsAsync(true); // Second row
-        readSequence.ReturnsAsync(false); // End of data
-
-        // Setup column ordinals
-        _readerMock.Setup(r => r.GetOrdinal("Id")).Returns(0);
-        _readerMock.Setup(r => r.GetOrdinal("Name")).Returns(1);
-        _readerMock.Setup(r => r.GetOrdinal("Amount")).Returns(2);
-
-        // Setup return values
-        _readerMock.Setup(r => r.GetFieldValue<int>(0))
-            .Returns<int>(i => expectedResults[i].Id);
-        _readerMock.Setup(r => r.GetFieldValue<string>(1))
-            .Returns<int>(i => expectedResults[i].Name);
-        _readerMock.Setup(r => r.GetFieldValue<decimal>(2))
-            .Returns<int>(i => expectedResults[i].Amount);
-    }
-
-    private void SetupReaderForNullScenario()
-    {
-        _readerMock.SetupSequence(r => r.ReadAsync())
-            .ReturnsAsync(true)  // One row
-            .ReturnsAsync(false); // End
-
-        // Setup column ordinals
-        _readerMock.Setup(r => r.GetOrdinal("Id")).Returns(0);
-        _readerMock.Setup(r => r.GetOrdinal("Name")).Returns(1);
-        _readerMock.Setup(r => r.GetOrdinal("Description")).Returns(2);
-        _readerMock.Setup(r => r.GetOrdinal("Amount")).Returns(3);
-        _readerMock.Setup(r => r.GetOrdinal("DateCreated")).Returns(4);
-
-        // Setup null values
-        _readerMock.Setup(r => r.IsDBNull(0)).Returns(false);
-        _readerMock.Setup(r => r.IsDBNull(1)).Returns(true);  // Name is null
-        _readerMock.Setup(r => r.IsDBNull(2)).Returns(true);  // Description is null
-        _readerMock.Setup(r => r.IsDBNull(3)).Returns(false); // Amount has value
-        _readerMock.Setup(r => r.IsDBNull(4)).Returns(true);  // DateCreated is null
-
-        // Setup values
-        _readerMock.Setup(r => r.GetFieldValue<int>(0)).Returns(1);
-        _readerMock.Setup(r => r.GetFieldValue<decimal>(3)).Returns(100.50m);
-    }
-
-    private void VerifyCommandSetup(int expectedId)
-    {
-        _commandMock.VerifySet(c => c.CommandType = CommandType.StoredProcedure);
-        _commandMock.VerifySet(c => c.CommandText = "prcname");
-        _commandMock.Verify(c => c.AddParameter("id", expectedId), Times.Once);
-    }
-
-    private void VerifyConnectionManagement()
-    {
-        _connectionMock.Verify(c => c.OpenAsync(), Times.Once);
-        _connectionMock.Verify(c => c.CloseAsync(), Times.Once);
+        Assert.That(result, Is.EqualTo(mockConnection.Object));
     }
 
     #endregion
+
+    #region DatabaseConnectionWrapper Tests
+
+    [Test]
+    public async Task DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
+    {
+        // Arrange
+        var mockConnection = new Mock<DbConnection>();
+        var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+        // Act
+        await wrapper.OpenAsync();
+        await wrapper.CloseAsync();
+
+        // Assert
+        mockConnection.Verify(c => c.OpenAsync(), Times.Once);
+        mockConnection.Verify(c => c.CloseAsync(), Times.Once);
+    }
+
+    [Test]
+    public void DatabaseConnectionWrapper_CreateCommand_ShouldReturnCommand()
+    {
+        // Arrange
+        var mockCommand = new Mock<IDbCommand>();
+        var mockConnection = new Mock<DbConnection>();
+        mockConnection.Setup(c => c.CreateCommand()).Returns(mockCommand.Object);
+        
+        var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+        // Act
+        var result = wrapper.CreateCommand();
+
+        // Assert
+        Assert.That(result, Is.EqualTo(mockCommand.Object));
+    }
+
+    [Test]
+    public void DatabaseConnectionWrapper_CreateWrappedCommand_ShouldReturnWrapper()
+    {
+        // Arrange
+        var mockCommand = new Mock<IDbCommand>();
+        var mockConnection = new Mock<DbConnection>();
+        mockConnection.Setup(c => c.CreateCommand()).Returns(mockCommand.Object);
+        
+        var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+        // Act
+        var result = wrapper.CreateWrappedCommand();
+
+        // Assert
+        Assert.That(result, Is.InstanceOf<DbCommandWrapper>());
+    }
+
+    [Test]
+    public void DatabaseConnectionWrapper_Dispose_ShouldDisposeConnection()
+    {
+        // Arrange
+        var mockConnection = new Mock<DbConnection>();
+        var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+        // Act
+        wrapper.Dispose();
+
+        // Assert
+        mockConnection.Verify(c => c.Dispose(), Times.Once);
+    }
+
+    #endregion
+
+    #region DataReaderWrapper Tests
+
+    [Test]
+    public async Task DataReaderWrapper_ReadAsync_ShouldCallUnderlyingReader()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        mockReader.Setup(r => r.ReadAsync(default)).ReturnsAsync(true);
+        
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        var result = await wrapper.ReadAsync();
+
+        // Assert
+        Assert.That(result, Is.True);
+        mockReader.Verify(r => r.ReadAsync(default), Times.Once);
+    }
+
+    [Test]
+    public void DataReaderWrapper_Indexer_ShouldReturnValue()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        mockReader.Setup(r => r["test"]).Returns("value");
+        
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        var result = wrapper["test"];
+
+        // Assert
+        Assert.That(result, Is.EqualTo("value"));
+    }
+
+    [Test]
+    public void DataReaderWrapper_GetOrdinal_ShouldReturnPosition()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        mockReader.Setup(r => r.GetOrdinal("name")).Returns(1);
+        
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        var result = wrapper.GetOrdinal("name");
+
+        // Assert
+        Assert.That(result, Is.EqualTo(1));
+    }
+
+    [Test]
+    public void DataReaderWrapper_GetFieldValue_ShouldReturnTypedValue()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        mockReader.Setup(r => r.GetFieldValue<int>(0)).Returns(42);
+        
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        var result = wrapper.GetFieldValue<int>(0);
+
+        // Assert
+        Assert.That(result, Is.EqualTo(42));
+    }
+
+    [Test]
+    public void DataReaderWrapper_IsDBNull_ShouldReturnStatus()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        mockReader.Setup(r => r.IsDBNull(0)).Returns(true);
+        
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        var result = wrapper.IsDBNull(0);
+
+        // Assert
+        Assert.That(result, Is.True);
+    }
+
+    [Test]
+    public void DataReaderWrapper_Dispose_ShouldDisposeReader()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        wrapper.Dispose();
+
+        // Assert
+        mockReader.Verify(r => r.Dispose(), Times.Once);
+    }
+
+    #endregion
+}
+
+====public static class TestHelpers
+{
+    public static benchDBcontex CreateMockDbContext()
+    {
+        var options = new DbContextOptionsBuilder<benchDBcontex>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+
+        return new benchDBcontex(options);
+    }
 }
