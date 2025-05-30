@@ -4,6 +4,7 @@ using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
+using System;
 
 [TestFixture]
 public class WrapperTests
@@ -50,6 +51,11 @@ public class WrapperTests
     {
         // Arrange
         var mockConnection = new Mock<DbConnection>();
+        mockConnection.Setup(c => c.OpenAsync(It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        mockConnection.Setup(c => c.CloseAsync())
+            .Returns(Task.CompletedTask);
+        
         var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
 
         // Act
@@ -57,7 +63,7 @@ public class WrapperTests
         await wrapper.CloseAsync();
 
         // Assert
-        mockConnection.Verify(c => c.OpenAsync(), Times.Once);
+        mockConnection.Verify(c => c.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
         mockConnection.Verify(c => c.CloseAsync(), Times.Once);
     }
 
@@ -93,6 +99,7 @@ public class WrapperTests
 
         // Assert
         Assert.That(result, Is.InstanceOf<DbCommandWrapper>());
+        Assert.That(((DbCommandWrapper)result).GetWrappedCommand(), Is.EqualTo(mockCommand.Object));
     }
 
     [Test]
@@ -109,6 +116,21 @@ public class WrapperTests
         mockConnection.Verify(c => c.Dispose(), Times.Once);
     }
 
+    [Test]
+    public void DatabaseConnectionWrapper_Dispose_ShouldOnlyDisposeOnce()
+    {
+        // Arrange
+        var mockConnection = new Mock<DbConnection>();
+        var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+        // Act
+        wrapper.Dispose();
+        wrapper.Dispose(); // Second call
+
+        // Assert
+        mockConnection.Verify(c => c.Dispose(), Times.Once);
+    }
+
     #endregion
 
     #region DataReaderWrapper Tests
@@ -118,7 +140,8 @@ public class WrapperTests
     {
         // Arrange
         var mockReader = new Mock<DbDataReader>();
-        mockReader.Setup(r => r.ReadAsync(default)).ReturnsAsync(true);
+        mockReader.Setup(r => r.ReadAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
         
         var wrapper = new DataReaderWrapper(mockReader.Object);
 
@@ -127,7 +150,7 @@ public class WrapperTests
 
         // Assert
         Assert.That(result, Is.True);
-        mockReader.Verify(r => r.ReadAsync(default), Times.Once);
+        mockReader.Verify(r => r.ReadAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Test]
@@ -208,121 +231,35 @@ public class WrapperTests
         mockReader.Verify(r => r.Dispose(), Times.Once);
     }
 
+    [Test]
+    public void DataReaderWrapper_Dispose_ShouldOnlyDisposeOnce()
+    {
+        // Arrange
+        var mockReader = new Mock<DbDataReader>();
+        var wrapper = new DataReaderWrapper(mockReader.Object);
+
+        // Act
+        wrapper.Dispose();
+        wrapper.Dispose(); // Second call
+
+        // Assert
+        mockReader.Verify(r => r.Dispose(), Times.Once);
+    }
+
     #endregion
 }
 
-====public static class TestHelpers
+// Helper class needed for DbCommandWrapper test
+public class DbCommandWrapper : IDbCommandWrapper
 {
-    public static benchDBcontex CreateMockDbContext()
+    private readonly IDbCommand _command;
+    
+    public DbCommandWrapper(IDbCommand command)
     {
-        var options = new DbContextOptionsBuilder<benchDBcontex>()
-            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-            .Options;
-
-        return new benchDBcontex(options);
+        _command = command;
     }
+    
+    public IDbCommand GetWrappedCommand() => _command;
+    
+    // Implement other IDbCommandWrapper members...
 }
-
-
-
-======================
-The error occurs because Moq cannot mock the OpenAsync() method directly since it's an extension method from Microsoft.EntityFrameworkCore.Relational. Here's how to properly test this:
-
-Corrected Test for Async Connection Methods
-csharp
-[Test]
-public async Task DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
-{
-    // Arrange
-    var mockConnection = new Mock<DbConnection>();
-    var mockDatabaseFacade = new Mock<DatabaseFacade>(MockBehavior.Loose, new Mock<DbContext>().Object);
-    
-    // Setup extension method call
-    mockConnection.Setup(c => c.OpenAsync(It.IsAny<CancellationToken>()))
-        .Returns(Task.CompletedTask)
-        .Verifiable();
-    
-    mockConnection.Setup(c => c.CloseAsync())
-        .Returns(Task.CompletedTask)
-        .Verifiable();
-    
-    var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
-
-    // Act
-    await wrapper.OpenAsync();
-    await wrapper.CloseAsync();
-
-    // Assert
-    mockConnection.Verify(c => c.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
-    mockConnection.Verify(c => c.CloseAsync(), Times.Once);
-}
-Alternative Solution Using RelationalDatabaseFacade
-If the above still doesn't work, try this more comprehensive approach:
-
-csharp
-[Test]
-public async Task DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
-{
-    // Arrange
-    var mockConnection = new Mock<DbConnection>();
-    var mockDbContext = new Mock<DbContext>();
-    var mockDatabase = new Mock<DatabaseFacade>(mockDbContext.Object);
-    
-    // Setup the extension method chain
-    mockDbContext.Setup(d => d.Database).Returns(mockDatabase.Object);
-    mockDatabase.Setup(d => d.GetDbConnection()).Returns(mockConnection.Object);
-    
-    mockConnection.Setup(c => c.OpenAsync(It.IsAny<CancellationToken>()))
-        .Returns(Task.CompletedTask);
-    
-    mockConnection.Setup(c => c.CloseAsync())
-        .Returns(Task.CompletedTask);
-    
-    var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
-
-    // Act
-    await wrapper.OpenAsync();
-    await wrapper.CloseAsync();
-
-    // Assert
-    mockConnection.Verify(c => c.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
-    mockConnection.Verify(c => c.CloseAsync(), Times.Once);
-}
-Key Changes Made:
-Added CancellationToken Parameter:
-
-OpenAsync() typically takes a CancellationToken
-
-Proper Task Return:
-
-Using Task.CompletedTask for async methods
-
-Verifiable Setup:
-
-Added .Verifiable() to track method calls
-
-Complete Mock Chain:
-
-Properly mocked the EF Core extension method chain
-
-If You Still Get NotSupportedException
-Consider using a real in-memory database for integration-style testing:
-
-csharp
-[Test]
-public async Task Integration_DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
-{
-    // Arrange
-    var options = new DbContextOptionsBuilder<benchDBcontex>()
-        .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-        .Options;
-    
-    using var dbContext = new benchDBcontex(options);
-    var connection = dbContext.Database.GetDbConnection();
-    var wrapper = new DatabaseConnectionWrapper(connection);
-
-    // Act & Assert
-    Assert.DoesNotThrowAsync(async () => await wrapper.OpenAsync());
-    Assert.DoesNotThrowAsync(async () => await wrapper.CloseAsync());
-}
-This approach tests against real EF Core behavior rather than trying to mock complex extension methods.
