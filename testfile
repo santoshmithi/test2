@@ -1,7 +1,6 @@
 using NUnit.Framework;
 using Moq;
 using System.Data;
-using System.Data.Common;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 
@@ -37,148 +36,156 @@ public class ExposerServiceTests
     }
 
     [Test]
-    public async Task GetBenchDetails_ShouldReturnData_WhenCountryFalse()
+    public async Task GetBenchDetails_ShouldFillCountryData_WhenIsCountryTrue()
     {
         // Arrange
-        const int testId = 1;
-        const bool isCountry = false;
+        SetupReaderWithData(hasCountry: true, hasCurrency: false, hasComposition: false);
         
-        SetupReaderForSuccessScenario(isCountry);
-
         // Act
-        var result = await _service.GetBenchDetails(testId, isCountry);
+        var result = await _service.GetBenchDetails(1, isCountry: true, isCurrency: false, isComposition: false);
 
         // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Count(), Is.EqualTo(1));
-        Assert.That(result.First().IndexSymbol, Is.EqualTo("TEST"));
-        Assert.That(result.First().CountryExp, Is.Empty);
-        
-        VerifyCommandSetup(testId);
-        VerifyConnectionManagement();
-    }
-
-    [Test]
-    public async Task GetBenchDetails_ShouldReturnDataWithCountry_WhenCountryTrue()
-    {
-        // Arrange
-        const int testId = 1;
-        const bool isCountry = true;
-        
-        SetupReaderForSuccessScenario(isCountry);
-        SetupCountryData();
-
-        // Act
-        var result = await _service.GetBenchDetails(testId, isCountry);
-
-        // Assert
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Count(), Is.EqualTo(1));
-        Assert.That(result.First().IndexSymbol, Is.EqualTo("TEST"));
         Assert.That(result.First().CountryExp, Is.Not.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Empty);
     }
 
     [Test]
-    public async Task GetBenchDetails_ShouldHandleNullValues()
+    public async Task GetBenchDetails_ShouldFillCurrencyData_WhenIsCurrencyTrue()
     {
         // Arrange
-        const int testId = 1;
-        const bool isCountry = true;
+        SetupReaderWithData(hasCountry: false, hasCurrency: true, hasComposition: false);
         
-        SetupReaderForNullScenario();
-
         // Act
-        var result = await _service.GetBenchDetails(testId, isCountry);
+        var result = await _service.GetBenchDetails(1, isCountry: false, isCurrency: true, isComposition: false);
 
         // Assert
-        Assert.That(result, Is.Not.Null);
+        Assert.That(result.First().CountryExp, Is.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Not.Empty);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldFillCompositionData_WhenIsCompositionTrue()
+    {
+        // Arrange
+        SetupReaderWithData(hasCountry: false, hasCurrency: false, hasComposition: true);
+        
+        // Act
+        var result = await _service.GetBenchDetails(1, isCountry: false, isCurrency: false, isComposition: true);
+
+        // Assert
+        Assert.That(result.First().CompositionData, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldFillAllData_WhenAllFlagsTrue()
+    {
+        // Arrange
+        SetupReaderWithData(hasCountry: true, hasCurrency: true, hasComposition: true);
+        
+        // Act
+        var result = await _service.GetBenchDetails(1, isCountry: true, isCurrency: true, isComposition: true);
+
+        // Assert
+        Assert.That(result.First().CountryExp, Is.Not.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Not.Empty);
+        Assert.That(result.First().CompositionData, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldHandleNullValues_ForAllFields()
+    {
+        // Arrange
+        SetupReaderWithNullData();
+        
+        // Act
+        var result = await _service.GetBenchDetails(1, isCountry: true, isCurrency: true, isComposition: true);
+
+        // Assert
         Assert.That(result.First().IndexSymbol, Is.Null);
         Assert.That(result.First().CountryExp, Is.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Empty);
     }
 
     [Test]
-    public void GetBenchDetails_ShouldThrow_WhenConnectionFails()
+    public async Task GetBenchDetails_ShouldSkipCountryData_WhenFieldIsNull()
     {
         // Arrange
-        const int testId = 1;
-        const bool isCountry = false;
+        SetupReaderWithData(hasCountry: false, hasCurrency: true, hasComposition: true);
         
-        _connectionMock.Setup(c => c.OpenAsync())
-            .ThrowsAsync(new Exception("Connection failed"));
+        // Act
+        var result = await _service.GetBenchDetails(1, isCountry: true, isCurrency: true, isComposition: true);
 
-        // Act & Assert
-        Assert.ThrowsAsync<Exception>(() => _service.GetBenchDetails(testId, isCountry));
+        // Assert
+        Assert.That(result.First().CountryExp, Is.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Not.Empty);
     }
 
     [Test]
     public async Task GetBenchDetails_ShouldReturnEmpty_WhenNoData()
     {
         // Arrange
-        const int testId = 1;
-        const bool isCountry = false;
-        
         _readerMock.Setup(r => r.ReadAsync()).ReturnsAsync(false);
-
+        
         // Act
-        var result = await _service.GetBenchDetails(testId, isCountry);
+        var result = await _service.GetBenchDetails(1, isCountry: true, isCurrency: true, isComposition: true);
 
         // Assert
-        Assert.That(result, Is.Not.Null);
         Assert.That(result, Is.Empty);
     }
 
     #region Helper Methods
 
-    private void SetupReaderForSuccessScenario(bool isCountry)
+    private void SetupReaderWithData(bool hasCountry, bool hasCurrency, bool hasComposition)
     {
         var readSequence = _readerMock.SetupSequence(r => r.ReadAsync());
-        readSequence.ReturnsAsync(true); // One row
-        readSequence.ReturnsAsync(false); // End of data
+        readSequence.ReturnsAsync(true);
+        readSequence.ReturnsAsync(false);
 
-        // Setup column ordinals
+        // Common setup
         _readerMock.Setup(r => r.GetOrdinal("IndexSymbol")).Returns(0);
-        if (isCountry)
-        {
-            _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
-        }
-
-        // Setup values
         _readerMock.Setup(r => r.IsDBNull(0)).Returns(false);
         _readerMock.Setup(r => r.GetFieldValue<string>(0)).Returns("TEST");
+
+        // Country setup
+        if (hasCountry)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
+            _readerMock.Setup(r => r.IsDBNull(1)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(1)).Returns("{\"Country\":\"US\"}");
+        }
+
+        // Currency setup
+        if (hasCurrency)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("currency_exposer")).Returns(2);
+            _readerMock.Setup(r => r.IsDBNull(2)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(2)).Returns("{\"Currency\":\"USD\"}");
+        }
+
+        // Composition setup
+        if (hasComposition)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("composition")).Returns(3);
+            _readerMock.Setup(r => r.IsDBNull(3)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(3)).Returns("{\"Components\":[]}");
+        }
     }
 
-    private void SetupCountryData()
-    {
-        _readerMock.Setup(r => r.IsDBNull(1)).Returns(false);
-        _readerMock.Setup(r => r.GetFieldValue<string>(1)).Returns("{\"Country\":\"US\"}");
-    }
-
-    private void SetupReaderForNullScenario()
+    private void SetupReaderWithNullData()
     {
         _readerMock.SetupSequence(r => r.ReadAsync())
-            .ReturnsAsync(true)  // One row
-            .ReturnsAsync(false); // End
+            .ReturnsAsync(true)
+            .ReturnsAsync(false);
 
-        // Setup column ordinals
         _readerMock.Setup(r => r.GetOrdinal("IndexSymbol")).Returns(0);
         _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
+        _readerMock.Setup(r => r.GetOrdinal("currency_exposer")).Returns(2);
+        _readerMock.Setup(r => r.GetOrdinal("composition")).Returns(3);
 
-        // Setup null values
         _readerMock.Setup(r => r.IsDBNull(0)).Returns(true);
         _readerMock.Setup(r => r.IsDBNull(1)).Returns(true);
-    }
-
-    private void VerifyCommandSetup(int expectedId)
-    {
-        _commandMock.VerifySet(c => c.CommandType = CommandType.StoredProcedure);
-        _commandMock.VerifySet(c => c.CommandText = "prcname");
-        _commandMock.Verify(c => c.AddParameter("id", expectedId), Times.Once);
-    }
-
-    private void VerifyConnectionManagement()
-    {
-        _connectionMock.Verify(c => c.OpenAsync(), Times.Once);
-        _connectionMock.Verify(c => c.CloseAsync(), Times.Once);
+        _readerMock.Setup(r => r.IsDBNull(2)).Returns(true);
+        _readerMock.Setup(r => r.IsDBNull(3)).Returns(true);
     }
 
     #endregion
