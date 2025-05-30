@@ -222,3 +222,107 @@ public class WrapperTests
         return new benchDBcontex(options);
     }
 }
+
+
+
+======================
+The error occurs because Moq cannot mock the OpenAsync() method directly since it's an extension method from Microsoft.EntityFrameworkCore.Relational. Here's how to properly test this:
+
+Corrected Test for Async Connection Methods
+csharp
+[Test]
+public async Task DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
+{
+    // Arrange
+    var mockConnection = new Mock<DbConnection>();
+    var mockDatabaseFacade = new Mock<DatabaseFacade>(MockBehavior.Loose, new Mock<DbContext>().Object);
+    
+    // Setup extension method call
+    mockConnection.Setup(c => c.OpenAsync(It.IsAny<CancellationToken>()))
+        .Returns(Task.CompletedTask)
+        .Verifiable();
+    
+    mockConnection.Setup(c => c.CloseAsync())
+        .Returns(Task.CompletedTask)
+        .Verifiable();
+    
+    var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+    // Act
+    await wrapper.OpenAsync();
+    await wrapper.CloseAsync();
+
+    // Assert
+    mockConnection.Verify(c => c.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
+    mockConnection.Verify(c => c.CloseAsync(), Times.Once);
+}
+Alternative Solution Using RelationalDatabaseFacade
+If the above still doesn't work, try this more comprehensive approach:
+
+csharp
+[Test]
+public async Task DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
+{
+    // Arrange
+    var mockConnection = new Mock<DbConnection>();
+    var mockDbContext = new Mock<DbContext>();
+    var mockDatabase = new Mock<DatabaseFacade>(mockDbContext.Object);
+    
+    // Setup the extension method chain
+    mockDbContext.Setup(d => d.Database).Returns(mockDatabase.Object);
+    mockDatabase.Setup(d => d.GetDbConnection()).Returns(mockConnection.Object);
+    
+    mockConnection.Setup(c => c.OpenAsync(It.IsAny<CancellationToken>()))
+        .Returns(Task.CompletedTask);
+    
+    mockConnection.Setup(c => c.CloseAsync())
+        .Returns(Task.CompletedTask);
+    
+    var wrapper = new DatabaseConnectionWrapper(mockConnection.Object);
+
+    // Act
+    await wrapper.OpenAsync();
+    await wrapper.CloseAsync();
+
+    // Assert
+    mockConnection.Verify(c => c.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
+    mockConnection.Verify(c => c.CloseAsync(), Times.Once);
+}
+Key Changes Made:
+Added CancellationToken Parameter:
+
+OpenAsync() typically takes a CancellationToken
+
+Proper Task Return:
+
+Using Task.CompletedTask for async methods
+
+Verifiable Setup:
+
+Added .Verifiable() to track method calls
+
+Complete Mock Chain:
+
+Properly mocked the EF Core extension method chain
+
+If You Still Get NotSupportedException
+Consider using a real in-memory database for integration-style testing:
+
+csharp
+[Test]
+public async Task Integration_DatabaseConnectionWrapper_ShouldOpenAndCloseConnection()
+{
+    // Arrange
+    var options = new DbContextOptionsBuilder<benchDBcontex>()
+        .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+        .Options;
+    
+    using var dbContext = new benchDBcontex(options);
+    var connection = dbContext.Database.GetDbConnection();
+    var wrapper = new DatabaseConnectionWrapper(connection);
+
+    // Act & Assert
+    Assert.DoesNotThrowAsync(async () => await wrapper.OpenAsync());
+    Assert.DoesNotThrowAsync(async () => await wrapper.CloseAsync());
+}
+This approach tests against real EF Core behavior rather than trying to mock complex extension methods.
