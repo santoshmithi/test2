@@ -3,6 +3,272 @@ using Moq;
 using System.Data;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System;
+
+[TestFixture]
+public class ExposerServiceTests
+{
+    private Mock<IDbContexProvider> _dbContextProviderMock;
+    private Mock<IdatabaseconnectionFactory> _connectionFactoryMock;
+    private Mock<IDatabaseConnection> _connectionMock;
+    private Mock<ICommandWrapper> _commandMock;
+    private Mock<IDataReaderWrapper> _readerMock;
+    private ExposerService _service;
+
+    [SetUp]
+    public void Setup()
+    {
+        _dbContextProviderMock = new Mock<IDbContexProvider>();
+        _connectionFactoryMock = new Mock<IdatabaseconnectionFactory>();
+        _connectionMock = new Mock<IDatabaseConnection>();
+        _commandMock = new Mock<ICommandWrapper>();
+        _readerMock = new Mock<IDataReaderWrapper>();
+
+        var mockDbConnection = new Mock<DbConnection>();
+        _dbContextProviderMock.Setup(p => p.GetDbConnection()).Returns(mockDbConnection.Object);
+        _connectionFactoryMock.Setup(f => f.CreateConnection(It.IsAny<DbConnection>()))
+            .Returns(_connectionMock.Object);
+
+        _connectionMock.Setup(c => c.CreatewrapperCommand()).Returns(_commandMock.Object);
+        _commandMock.Setup(c => c.ExecuteReaderAsync()).ReturnsAsync(_readerMock.Object);
+
+        _service = new ExposerService(_dbContextProviderMock.Object, _connectionFactoryMock.Object);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldOpenAndCloseConnection()
+    {
+        // Arrange
+        SetupReaderWithData(false, false, false);
+
+        // Act
+        await _service.GetBenchDetails(1, false, false, false);
+
+        // Assert
+        _connectionMock.Verify(c => c.OPenAsync(), Times.Once);
+        _connectionMock.Verify(c => c.CloseAsync(), Times.Once);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldSetCommandProperties()
+    {
+        // Arrange
+        SetupReaderWithData(false, false, false);
+
+        // Act
+        await _service.GetBenchDetails(1, false, false, false);
+
+        // Assert
+        _commandMock.VerifySet(c => c.CommandType = CommandType.StoredProcedure);
+        _commandMock.VerifySet(c => c.CommandText = "prcname");
+        _commandMock.Verify(c => c.AddParameter("id", 1), Times.Once);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldHandleAllFalseFlags()
+    {
+        // Arrange
+        SetupReaderWithData(false, false, false);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, false, false, false);
+
+        // Assert
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result.Count(), Is.EqualTo(1));
+        Assert.That(result.First().IndexSymbol, Is.EqualTo("TEST"));
+        Assert.That(result.First().CountryExp, Is.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Empty);
+        Assert.That(result.First().Compositionsexp, Is.Empty);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldFillCountryData_WhenIsCountryTrue()
+    {
+        // Arrange
+        SetupReaderWithData(true, false, false);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, true, false, false);
+
+        // Assert
+        Assert.That(result.First().CountryExp, Is.Not.Empty);
+        Assert.That(result.First().CountryExp[0].id, Is.EqualTo("US"));
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldFillCurrencyData_WhenIsCurrencyTrue()
+    {
+        // Arrange
+        SetupReaderWithData(false, true, false);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, false, true, false);
+
+        // Assert
+        Assert.That(result.First().CurrencyExp, Is.Not.Empty);
+        Assert.That(result.First().CurrencyExp[0].id, Is.EqualTo("USD"));
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldFillCompositionData_WhenIsCompositionTrue()
+    {
+        // Arrange
+        SetupReaderWithData(false, false, true);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, false, false, true);
+
+        // Assert
+        Assert.That(result.First().Compositionsexp, Is.Not.Empty);
+        Assert.That(result.First().Compositionsexp[0].id, Is.EqualTo("COMP1"));
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldHandleNullValues()
+    {
+        // Arrange
+        SetupReaderWithNullData();
+
+        // Act
+        var result = await _service.GetBenchDetails(1, true, true, true);
+
+        // Assert
+        Assert.That(result.First().IndexSymbol, Is.Null);
+        Assert.That(result.First().CountryExp, Is.Empty);
+        Assert.That(result.First().CurrencyExp, Is.Empty);
+        Assert.That(result.First().Compositionsexp, Is.Empty);
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldSkipCountryData_WhenFieldIsNull()
+    {
+        // Arrange
+        SetupReaderWithPartialNullData(countryNull: true);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, true, false, false);
+
+        // Assert
+        Assert.That(result.First().CountryExp, Is.Empty);
+    }
+
+    [Test]
+    public void GetBenchDetails_ShouldThrow_WhenConnectionFails()
+    {
+        // Arrange
+        _connectionMock.Setup(c => c.OPenAsync()).ThrowsAsync(new Exception("Connection failed"));
+
+        // Act & Assert
+        Assert.ThrowsAsync<Exception>(() => _service.GetBenchDetails(1, false, false, false));
+    }
+
+    [Test]
+    public async Task GetBenchDetails_ShouldReturnEmpty_WhenNoData()
+    {
+        // Arrange
+        _readerMock.Setup(r => r.ReadAsync()).ReturnsAsync(false);
+
+        // Act
+        var result = await _service.GetBenchDetails(1, false, false, false);
+
+        // Assert
+        Assert.That(result, Is.Empty);
+    }
+
+    #region Helper Methods
+
+    private void SetupReaderWithData(bool hasCountry, bool hasCurrency, bool hasComposition)
+    {
+        var readSequence = _readerMock.SetupSequence(r => r.ReadAsync());
+        readSequence.ReturnsAsync(true);
+        readSequence.ReturnsAsync(false);
+
+        // Common setup
+        _readerMock.Setup(r => r.GetOrdinal("IndexSymbol")).Returns(0);
+        _readerMock.Setup(r => r.IsDBNull(0)).Returns(false);
+        _readerMock.Setup(r => r.GetFieldValue<string>(0)).Returns("TEST");
+
+        // Country setup
+        if (hasCountry)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
+            _readerMock.Setup(r => r.IsDBNull(1)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(1)).Returns("{\"id\":\"US\"}");
+        }
+
+        // Currency setup
+        if (hasCurrency)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("currency_exposer")).Returns(2);
+            _readerMock.Setup(r => r.IsDBNull(2)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(2)).Returns("{\"id\":\"USD\"}");
+        }
+
+        // Composition setup
+        if (hasComposition)
+        {
+            _readerMock.Setup(r => r.GetOrdinal("composition_exposer")).Returns(3);
+            _readerMock.Setup(r => r.IsDBNull(3)).Returns(false);
+            _readerMock.Setup(r => r.GetFieldValue<string>(3)).Returns("{\"id\":\"COMP1\"}");
+        }
+    }
+
+    private void SetupReaderWithNullData()
+    {
+        _readerMock.SetupSequence(r => r.ReadAsync())
+            .ReturnsAsync(true)
+            .ReturnsAsync(false);
+
+        _readerMock.Setup(r => r.GetOrdinal("IndexSymbol")).Returns(0);
+        _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
+        _readerMock.Setup(r => r.GetOrdinal("currency_exposer")).Returns(2);
+        _readerMock.Setup(r => r.GetOrdinal("composition_exposer")).Returns(3);
+
+        _readerMock.Setup(r => r.IsDBNull(0)).Returns(true);
+        _readerMock.Setup(r => r.IsDBNull(1)).Returns(true);
+        _readerMock.Setup(r => r.IsDBNull(2)).Returns(true);
+        _readerMock.Setup(r => r.IsDBNull(3)).Returns(true);
+    }
+
+    private void SetupReaderWithPartialNullData(bool countryNull = false, bool currencyNull = false, bool compositionNull = false)
+    {
+        _readerMock.SetupSequence(r => r.ReadAsync())
+            .ReturnsAsync(true)
+            .ReturnsAsync(false);
+
+        _readerMock.Setup(r => r.GetOrdinal("IndexSymbol")).Returns(0);
+        _readerMock.Setup(r => r.IsDBNull(0)).Returns(false);
+        _readerMock.Setup(r => r.GetFieldValue<string>(0)).Returns("TEST");
+
+        _readerMock.Setup(r => r.GetOrdinal("country_exposer")).Returns(1);
+        _readerMock.Setup(r => r.IsDBNull(1)).Returns(countryNull);
+
+        _readerMock.Setup(r => r.GetOrdinal("currency_exposer")).Returns(2);
+        _readerMock.Setup(r => r.IsDBNull(2)).Returns(currencyNull);
+
+        _readerMock.Setup(r => r.GetOrdinal("composition_exposer")).Returns(3);
+        _readerMock.Setup(r => r.IsDBNull(3)).Returns(compositionNull);
+
+        if (!countryNull)
+            _readerMock.Setup(r => r.GetFieldValue<string>(1)).Returns("{\"id\":\"US\"}");
+
+        if (!currencyNull)
+            _readerMock.Setup(r => r.GetFieldValue<string>(2)).Returns("{\"id\":\"USD\"}");
+
+        if (!compositionNull)
+            _readerMock.Setup(r => r.GetFieldValue<string>(3)).Returns("{\"id\":\"COMP1\"}");
+    }
+
+    #endregion
+}
+
+//////////////////////////////////////////////////////////////////////////
+using NUnit.Framework;
+using Moq;
+using System.Data;
+using System.Threading.Tasks;
+using System.Collections.Generic;
 
 [TestFixture]
 public class ExposerServiceTests
