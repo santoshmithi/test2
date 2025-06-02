@@ -1,5 +1,222 @@
 using NUnit.Framework;
 using Moq;
+using HotChocolate.Language;
+using HotChocolate.Resolvers;
+using System.Collections.Generic;
+using System;
+
+[TestFixture]
+public class QueryTests
+{
+    [Test]
+    public void ContainsField_ShouldReturnFalse_WhenSelectionSetIsNull()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns((SelectionSetNode)null);
+        
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsFalse(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldReturnTrue_WhenFieldExistsAtTopLevel()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        var selectionSetNode = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("testField"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(selectionSetNode);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsTrue(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldReturnTrue_WhenFieldExistsInNestedSelection()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var nestedSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("testField"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        var topLevelSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("parentField"), null, null, Array.Empty<DirectiveNode>(), nestedSelection)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(topLevelSelection);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsTrue(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldReturnTrue_WhenFieldExistsInInlineFragment()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var fragmentSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("testField"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        var topLevelSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new InlineFragmentNode(null, null, Array.Empty<DirectiveNode>(), fragmentSelection)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(topLevelSelection);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsTrue(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldReturnFalse_WhenFieldDoesNotExist()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var selectionSetNode = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("otherField"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(selectionSetNode);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsFalse(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldBeCaseInsensitive()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var selectionSetNode = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("TESTFIELD"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(selectionSetNode);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsTrue(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldHandleEmptySelectionSet()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var selectionSetNode = new SelectionSetNode(new List<ISelectionNode>());
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(selectionSetNode);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsFalse(result);
+    }
+
+    [Test]
+    public void ContainsField_ShouldHandleComplexNestedStructures()
+    {
+        // Arrange
+        var contextMock = new Mock<IResolverContext>();
+        var fieldNodeMock = new Mock<IFieldNode>();
+        
+        var deepestSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("testField"), null, null, Array.Empty<DirectiveNode>(), null)
+        });
+        
+        var middleSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("middleField"), null, null, Array.Empty<DirectiveNode>(), deepestSelection),
+            new InlineFragmentNode(null, null, Array.Empty<DirectiveNode>(), deepestSelection)
+        });
+        
+        var topLevelSelection = new SelectionSetNode(new List<ISelectionNode>
+        {
+            new FieldNode(null, new NameNode("topField"), null, null, Array.Empty<DirectiveNode>(), middleSelection),
+            new InlineFragmentNode(null, null, Array.Empty<DirectiveNode>(), middleSelection)
+        });
+        
+        fieldNodeMock.Setup(f => f.SelectionSet).Returns(topLevelSelection);
+        contextMock.Setup(c => c.Selection.SyntaxNode).Returns(fieldNodeMock.Object);
+        
+        var query = new Query();
+
+        // Act
+        var result = query.ContainsField(contextMock.Object, "testField");
+
+        // Assert
+        Assert.IsTrue(result);
+    }
+}
+-----------------------
+
+using NUnit.Framework;
+using Moq;
 using System.Data;
 using System.Threading.Tasks;
 using System.Collections.Generic;
