@@ -1,3 +1,196 @@
+
+public class DbContextProvider : IDbContextProvider
+{
+    private readonly BenchDbContext _benchDbContext;
+
+    public DbContextProvider(BenchDbContext benchDbContext)
+    {
+        _benchDbContext = benchDbContext ?? throw new ArgumentNullException(nameof(benchDbContext));
+    }
+
+    public BenchDbContext GetBenchDbContext() => _benchDbContext;
+    public DbConnection GetDbConnection() => _benchDbContext.Database.GetDbConnection();
+}
+
+public class DatabaseConnectionWrapper : IDatabaseConnection, IDisposable
+{
+    private readonly DbConnection _connection;
+    private bool _disposed;
+
+    public DatabaseConnectionWrapper(DbConnection connection)
+    {
+        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+    }
+
+    public async Task OpenAsync() => await _connection.OpenAsync();
+    public async Task CloseAsync() => await _connection.CloseAsync();
+
+    public IDbCommand CreateCommand() => _connection.CreateCommand();
+
+    public IDbCommandWrapper CreateWrappedCommand() => new DbCommandWrapper(_connection.CreateCommand());
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+
+        if (disposing)
+        {
+            _connection?.Dispose();
+        }
+
+        _disposed = true;
+    }
+}
+
+public interface IDatabaseConnection : IDisposable
+{
+    Task OpenAsync();
+    Task CloseAsync();
+    IDbCommand CreateCommand();
+    IDbCommandWrapper CreateWrappedCommand();
+}
+
+public interface IDbCommandWrapper
+{
+    CommandType CommandType { get; set; }
+    string CommandText { get; set; }
+    Task<IDataReader> ExecuteReaderAsync();
+    void AddParameter(string name, object value);
+}
+
+public interface IDatabaseConnectionFactory
+{
+    IDatabaseConnection CreateConnection(DbConnection dbConnection);
+}
+==============================================================================
+using NUnit.Framework;
+using Moq;
+using System.Data;
+using System.Data.Common;
+
+[TestFixture]
+public class DbContextProviderTests
+{
+    [Test]
+    public void Constructor_ThrowsArgumentNullException_WhenContextIsNull()
+    {
+        Assert.Throws<ArgumentNullException>(() => new DbContextProvider(null));
+    }
+
+    [Test]
+    public void GetBenchDbContext_ReturnsInjectedContext()
+    {
+        var mockContext = new Mock<BenchDbContext>();
+        var provider = new DbContextProvider(mockContext.Object);
+        
+        Assert.AreEqual(mockContext.Object, provider.GetBenchDbContext());
+    }
+
+    [Test]
+    public void GetDbConnection_ReturnsConnectionFromContext()
+    {
+        var mockContext = new Mock<BenchDbContext>();
+        var mockConnection = new Mock<DbConnection>();
+        mockContext.Setup(x => x.Database.GetDbConnection()).Returns(mockConnection.Object);
+        
+        var provider = new DbContextProvider(mockContext.Object);
+        
+        Assert.AreEqual(mockConnection.Object, provider.GetDbConnection());
+    }
+}
+
+[TestFixture]
+public class DatabaseConnectionWrapperTests
+{
+    private Mock<DbConnection> _mockConnection;
+    private DatabaseConnectionWrapper _wrapper;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockConnection = new Mock<DbConnection>();
+        _wrapper = new DatabaseConnectionWrapper(_mockConnection.Object);
+    }
+
+    [Test]
+    public void Constructor_ThrowsArgumentNullException_WhenConnectionIsNull()
+    {
+        Assert.Throws<ArgumentNullException>(() => new DatabaseConnectionWrapper(null));
+    }
+
+    [Test]
+    public async Task OpenAsync_CallsConnectionOpenAsync()
+    {
+        await _wrapper.OpenAsync();
+        _mockConnection.Verify(x => x.OpenAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Test]
+    public async Task CloseAsync_CallsConnectionCloseAsync()
+    {
+        await _wrapper.CloseAsync();
+        _mockConnection.Verify(x => x.CloseAsync(), Times.Once);
+    }
+
+    [Test]
+    public void CreateCommand_ReturnsCommandFromConnection()
+    {
+        var mockCommand = new Mock<IDbCommand>();
+        _mockConnection.Setup(x => x.CreateCommand()).Returns(mockCommand.Object);
+        
+        var result = _wrapper.CreateCommand();
+        
+        Assert.AreEqual(mockCommand.Object, result);
+    }
+
+    [Test]
+    public void CreateWrappedCommand_ReturnsWrappedCommand()
+    {
+        var mockCommand = new Mock<IDbCommand>();
+        _mockConnection.Setup(x => x.CreateCommand()).Returns(mockCommand.Object);
+        
+        var result = _wrapper.CreateWrappedCommand();
+        
+        Assert.IsInstanceOf<IDbCommandWrapper>(result);
+    }
+
+    [Test]
+    public void Dispose_DisposesConnection()
+    {
+        _wrapper.Dispose();
+        _mockConnection.Verify(x => x.Dispose(), Times.Once);
+    }
+
+    [Test]
+    public void Dispose_IsIdempotent()
+    {
+        _wrapper.Dispose();
+        _wrapper.Dispose();
+        _mockConnection.Verify(x => x.Dispose(), Times.Once);
+    }
+}
+
+[TestFixture]
+public class DatabaseConnectionFactoryTests
+{
+    [Test]
+    public void CreateConnection_ReturnsDatabaseConnectionWrapper()
+    {
+        var factory = new DatabaseConnectionFactory();
+        var mockConnection = new Mock<DbConnection>();
+        
+        var result = factory.CreateConnection(mockConnection.Object);
+        
+        Assert.IsInstanceOf<DatabaseConnectionWrapper>(result);
+    }
+}
+========================================================
 using NUnit.Framework;
 using Moq;
 using HotChocolate.Language;
