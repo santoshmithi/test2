@@ -1,120 +1,82 @@
-I'll help you modify the TryApiCallAsync method to attempt 5 times before either returning null (for non-exception cases) or throwing an exception. I'll also adjust the calling code and actual method accordingly.
-
-Here's the modified version:
-
-csharp
 private async Task<TResult> TryApiCallAsync<TResult>(
-    Func<CancellationToken, Task<TResult>> codeToTry, 
-    CancellationToken cancellation,
-    bool returnNullOnFailure = false)
+    Func<CancellationToken, Task<(TResult Result, Exception Error)>> codeToTry, 
+    CancellationToken cancellationToken)
 {
-    var errorMessages = new List<string>();
     const int maxRetryAttempts = 5;
     var delay = TimeSpan.FromSeconds(1); // Initial delay
     const bool exponentialBackoff = true;
+    Exception lastException = null;
 
     for (var attempt = 0; attempt < maxRetryAttempts; attempt++)
     {
-        try
+        var (result, error) = await codeToTry(cancellationToken);
+        
+        if (error == null)
         {
-            Log.LogInformation($"API Call Attempt: {attempt + 1}/{maxRetryAttempts}");
-            return await codeToTry(cancellation);
+            return result;
         }
-        catch (Exception ex)
+
+        lastException = error;
+        Log.LogInformation($"Error in attempt {attempt + 1}: {error.Message}");
+        
+        if (attempt < maxRetryAttempts - 1) // Only delay if we're trying again
         {
-            Log.LogInformation("Exception message from API call: " + ex.Message);
-            errorMessages.Add(ex.Message);
-            
-            if (attempt < maxRetryAttempts - 1) // Only delay if we're trying again
+            await Task.Delay(delay, cancellationToken);
+            if (exponentialBackoff)
             {
-                await Task.Delay(delay, cancellation);
-                if (exponentialBackoff)
-                {
-                    delay = TimeSpan.FromTicks(delay.Ticks * 2); // Double the delay
-                }
+                delay = TimeSpan.FromTicks(delay.Ticks * 2); // Double the delay
             }
         }
     }
 
-    if (returnNullOnFailure && default(TResult) == null)
-    {
-        return default;
-    }
-    
-    throw new SynchronisationException("The sync failed after 5 attempts. Reasons: " + string.Join("; ", errorMessages));
+    // After all retries failed, throw the last exception
+    throw new SynchronisationException(
+        $"The operation failed after {maxRetryAttempts} attempts. Last error: {lastException?.Message}", 
+        lastException);
 }
 
-// Modified CountAsync method to potentially return null
-public async Task<int?> CountAsync(CancellationToken cancellation, ExecutionContext context)
+// Modified CountAsync to return exceptions instead of throwing
+public async Task<(int Result, Exception Error)> CountAsync(CancellationToken cancellation, ExecutionContext context)
 {
-    var uri = context.BuildRequestUri(Uri, true);
-    Log.RequestingResource(Resource, uri);
-
-    var result = await Client.GetAsync(uri);
-
-    if (result.IsSuccessStatusCode)
+    try
     {
-        Log.ReceivedSuccessResponse(Resource, uri, (int)result.StatusCode);
-        var countString = await result.Content.ReadAsStringAsync();
+        var uri = context.BuildRequestUri(Uri, true);
+        Log.RequestingResource(Resource, uri);
 
-        if (int.TryParse(countString, out var count))
+        var result = await Client.GetAsync(uri);
+
+        if (result.IsSuccessStatusCode)
         {
-            Log.ReceivedCountResponse(Resource, uri, count);
-            return count;
+            Log.ReceivedSuccessResponse(Resource, uri, (int)result.StatusCode);
+            var countString = await result.Content.ReadAsStringAsync();
+
+            if (int.TryParse(countString, out var count))
+            {
+                Log.ReceivedCountResponse(Resource, uri, count);
+                return (count, null);
+            }
+            
+            return (0, new SynchronisationException($"Unable to read a count value from {countString}"));
         }
-        
-        // Return null if parsing fails instead of throwing
-        return null;
+        else
+        {
+            var error = await result.Content.ReadAsStringAsync();
+            return (0, new SynchronisationException($"Responded with {result.StatusCode} and message {error}"));
+        }
     }
-    else
+    catch (Exception ex)
     {
-        var error = await result.Content.ReadAsStringAsync();
-        // Return null for unsuccessful status codes instead of throwing
-        return null;
+        return (0, ex); // Return any unexpected exceptions
     }
 }
 
 // Modified calling code
-var totalRecords = await TryApiCallAsync(
+var (totalRecords, error) = await TryApiCallAsync(
     async token => await request.CountAsync(token, context), 
-    cancellationToken,
-    returnNullOnFailure: true);
+    cancellationToken);
 
-if (totalRecords == null)
+if (error != null)
 {
-    // Handle the null case (failed after 5 attempts)
-    Log.LogInformation("Count operation failed after 5 attempts");
-    // ... other handling logic
+    // Handle the error (it will already have been logged by TryApiCallAsync)
+    // You can choose to log it differently here if needed
 }
-else
-{
-    // Use totalRecords.Value since it's an int?
-    // ... success logic
-}
-Key changes made:
-
-TryApiCallAsync now:
-
-Has a fixed 5 attempts (removed the SetApiRetryOptions call)
-
-Takes a returnNullOnFailure parameter
-
-Returns null (for nullable types) if all attempts fail and returnNullOnFailure is true
-
-Otherwise throws an exception after 5 attempts
-
-CountAsync now:
-
-Returns int? (nullable int) instead of int
-
-Returns null instead of throwing exceptions for error cases
-
-The calling code:
-
-Passes returnNullOnFailure: true to get null instead of an exception
-
-Checks for null in the result
-
-This gives you more flexibility in handling failures - you can choose to get null or an exception after 5 attempts. The exponential backoff is preserved but simplified to double the delay each time.
-
-You can adjust the initial delay (currently 1 second) and the backoff factor (currently 2x) as needed for your specific API requirements.
