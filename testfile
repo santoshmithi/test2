@@ -1,29 +1,120 @@
-We’re updating our Employee Data API to improve performance and usability. Below are the key changes:
+I'll help you modify the TryApiCallAsync method to attempt 5 times before either returning null (for non-exception cases) or throwing an exception. I'll also adjust the calling code and actual method accordingly.
 
-New GraphQL Endpoint
-Endpoint: POST /graphql/latestEmployee
-Features:
-✅ Pagination: Fetch data in pages (pagesize=10, pagenumber increments until null).
-✅ Basic Filtering: Supports indexsymbol (max 10 symbols per request).
-⚠ Limitations:
+Here's the modified version:
 
-No WHERE clause support.
+csharp
+private async Task<TResult> TryApiCallAsync<TResult>(
+    Func<CancellationToken, Task<TResult>> codeToTry, 
+    CancellationToken cancellation,
+    bool returnNullOnFailure = false)
+{
+    var errorMessages = new List<string>();
+    const int maxRetryAttempts = 5;
+    var delay = TimeSpan.FromSeconds(1); // Initial delay
+    const bool exponentialBackoff = true;
 
-No total record count (loop until empty response).
+    for (var attempt = 0; attempt < maxRetryAttempts; attempt++)
+    {
+        try
+        {
+            Log.LogInformation($"API Call Attempt: {attempt + 1}/{maxRetryAttempts}");
+            return await codeToTry(cancellation);
+        }
+        catch (Exception ex)
+        {
+            Log.LogInformation("Exception message from API call: " + ex.Message);
+            errorMessages.Add(ex.Message);
+            
+            if (attempt < maxRetryAttempts - 1) // Only delay if we're trying again
+            {
+                await Task.Delay(delay, cancellation);
+                if (exponentialBackoff)
+                {
+                    delay = TimeSpan.FromTicks(delay.Ticks * 2); // Double the delay
+                }
+            }
+        }
+    }
 
-Old REST Endpoint (Deprecated)
-Endpoint: GET /api/employees
-Features:
-✅ Supports GraphQL-style WHERE conditions for complex filtering.
-⚠ Limitations:
+    if (returnNullOnFailure && default(TResult) == null)
+    {
+        return default;
+    }
+    
+    throw new SynchronisationException("The sync failed after 5 attempts. Reasons: " + string.Join("; ", errorMessages));
+}
 
-Known performance issues with large datasets (e.g., currency exposure).
+// Modified CountAsync method to potentially return null
+public async Task<int?> CountAsync(CancellationToken cancellation, ExecutionContext context)
+{
+    var uri = context.BuildRequestUri(Uri, true);
+    Log.RequestingResource(Resource, uri);
 
-Action Items:
-For simple queries: Migrate to the new GraphQL endpoint.
+    var result = await Client.GetAsync(uri);
 
-For complex WHERE clauses: Continue using the old endpoint (optimizations coming soon).
+    if (result.IsSuccessStatusCode)
+    {
+        Log.ReceivedSuccessResponse(Resource, uri, (int)result.StatusCode);
+        var countString = await result.Content.ReadAsStringAsync();
 
-Documentation: [Link to Confluence/API Docs]
+        if (int.TryParse(countString, out var count))
+        {
+            Log.ReceivedCountResponse(Resource, uri, count);
+            return count;
+        }
+        
+        // Return null if parsing fails instead of throwing
+        return null;
+    }
+    else
+    {
+        var error = await result.Content.ReadAsStringAsync();
+        // Return null for unsuccessful status codes instead of throwing
+        return null;
+    }
+}
 
-Let us know if you need assistance transitioning.
+// Modified calling code
+var totalRecords = await TryApiCallAsync(
+    async token => await request.CountAsync(token, context), 
+    cancellationToken,
+    returnNullOnFailure: true);
+
+if (totalRecords == null)
+{
+    // Handle the null case (failed after 5 attempts)
+    Log.LogInformation("Count operation failed after 5 attempts");
+    // ... other handling logic
+}
+else
+{
+    // Use totalRecords.Value since it's an int?
+    // ... success logic
+}
+Key changes made:
+
+TryApiCallAsync now:
+
+Has a fixed 5 attempts (removed the SetApiRetryOptions call)
+
+Takes a returnNullOnFailure parameter
+
+Returns null (for nullable types) if all attempts fail and returnNullOnFailure is true
+
+Otherwise throws an exception after 5 attempts
+
+CountAsync now:
+
+Returns int? (nullable int) instead of int
+
+Returns null instead of throwing exceptions for error cases
+
+The calling code:
+
+Passes returnNullOnFailure: true to get null instead of an exception
+
+Checks for null in the result
+
+This gives you more flexibility in handling failures - you can choose to get null or an exception after 5 attempts. The exponential backoff is preserved but simplified to double the delay each time.
+
+You can adjust the initial delay (currently 1 second) and the backoff factor (currently 2x) as needed for your specific API requirements.
