@@ -80,3 +80,109 @@ if (error != null)
     // Handle the error (it will already have been logged by TryApiCallAsync)
     // You can choose to log it differently here if needed
 }
+===================================================
+// First, define a result type to make the return values clearer
+public class OperationResult<T>
+{
+    public T Result { get; set; }
+    public Exception Error { get; set; }
+    public bool IsSuccess => Error == null;
+}
+
+private async Task<OperationResult<TResult>> TryApiCallAsync<TResult>(
+    Func<CancellationToken, Task<OperationResult<TResult>>> codeToTry, 
+    CancellationToken cancellationToken)
+{
+    const int maxRetryAttempts = 5;
+    var delay = TimeSpan.FromSeconds(1);
+    const bool exponentialBackoff = true;
+    Exception lastException = null;
+
+    for (var attempt = 0; attempt < maxRetryAttempts; attempt++)
+    {
+        var operationResult = await codeToTry(cancellationToken);
+        
+        if (operationResult.IsSuccess)
+        {
+            return operationResult;
+        }
+
+        lastException = operationResult.Error;
+        Log.LogInformation($"Error in attempt {attempt + 1}: {lastException.Message}");
+        
+        if (attempt < maxRetryAttempts - 1)
+        {
+            await Task.Delay(delay, cancellationToken);
+            if (exponentialBackoff)
+            {
+                delay = TimeSpan.FromTicks(delay.Ticks * 2);
+            }
+        }
+    }
+
+    return new OperationResult<TResult> 
+    { 
+        Error = new SynchronisationException(
+            $"Operation failed after {maxRetryAttempts} attempts. Last error: {lastException?.Message}", 
+            lastException)
+    };
+}
+
+// Modified CountAsync
+public async Task<OperationResult<int>> CountAsync(CancellationToken cancellation, ExecutionContext context)
+{
+    try
+    {
+        var uri = context.BuildRequestUri(Uri, true);
+        Log.RequestingResource(Resource, uri);
+
+        var result = await Client.GetAsync(uri);
+
+        if (result.IsSuccessStatusCode)
+        {
+            Log.ReceivedSuccessResponse(Resource, uri, (int)result.StatusCode);
+            var countString = await result.Content.ReadAsStringAsync();
+
+            if (int.TryParse(countString, out var count))
+            {
+                Log.ReceivedCountResponse(Resource, uri, count);
+                return new OperationResult<int> { Result = count };
+            }
+            
+            return new OperationResult<int> 
+            { 
+                Error = new SynchronisationException($"Unable to read count from {countString}")
+            };
+        }
+        else
+        {
+            var error = await result.Content.ReadAsStringAsync();
+            return new OperationResult<int> 
+            { 
+                Error = new SynchronisationException($"Server responded with {result.StatusCode}: {error}")
+            };
+        }
+    }
+    catch (Exception ex)
+    {
+        return new OperationResult<int> { Error = ex };
+    }
+}
+
+// Calling code
+var countResult = await TryApiCallAsync(
+    async token => await request.CountAsync(token, context), 
+    cancellationToken);
+
+if (countResult.IsSuccess)
+{
+    // Use countResult.Result
+    Console.WriteLine($"Count: {countResult.Result}");
+}
+else
+{
+    // Handle countResult.Error
+    Console.WriteLine($"Error: {countResult.Error.Message}");
+    // You can choose to throw here if needed:
+    // throw countResult.Error;
+}
